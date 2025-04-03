@@ -1,0 +1,36 @@
+[package]
+name = "smugmug_syncer"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "smugmug-syncer"
+path = "src/main.rs"
+
+[dependencies]
+const_format = "0.2"
+#smugmug = "0.3"
+smugmug = { path = "/Users/chamilton/wip/smugmug_rs" }
+url = "2"
+reqwest = "0.12"
+reqwest-oauth1 = "0.3"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+dotenvy = "0.15"
+md5 = "0.7"
+tree-ds = { version = "0.1", features = [
+    "serde",
+    "async",
+    "compact_serde",
+    "print_node_id",
+] }
+log = "0.4"
+env_logger = "0.11"
+# flexbuffers = "25"
+zstd = "0.13"
+clap = { version = "4", features = ["derive"] }
+clap_derive = "4"
