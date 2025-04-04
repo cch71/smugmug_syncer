@@ -6,6 +6,34 @@ As an offshoot I am hoping to add the ability in the future to take the meta
 data and image tags and feed that through AI to generate tags and have that
 saved back up into the SmugMug Account
 
+## Building
+
+- Install rust tools: [How to install Rust](https://www.rust-lang.org/tools/install)
+- Clone the repo
+- cd cloned repo
+- run cargo build --release
+- run it
+
+```console
+➜  git clone https://github.com/cch71/smugmug_syncer syncer
+Cloning into 'syncer'...
+remote: Enumerating objects: 43, done.
+remote: Counting objects: 100% (43/43), done.
+remote: Compressing objects: 100% (22/22), done.
+remote: Total 43 (delta 23), reused 40 (delta 20), pack-reused 0 (from 0)
+Receiving objects: 100% (43/43), 47.61 KiB | 650.00 KiB/s, done.
+Resolving deltas: 100% (23/23), done.
+
+➜  cd syncer
+
+➜  cargo build --release
+   Compiling proc-macro2 v1.0.94
+   Compiling unicode-ident v1.0.18
+   ...
+
+➜  target/release/smugmug-syncer --help
+```
+
 ## Getting started
 
 _If building from source (Binary isn't provided yet) then you need to get an API key from SmugMug_
