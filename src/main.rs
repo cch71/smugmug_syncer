@@ -30,10 +30,8 @@ SMUGMUG_API_SECRET - Required for full access to SmugMug Data
 SMUGMUG_AUTH_CACHE - Local path to cache authentication tokens
 
 SMUGMUG_NICKNAME - Can be used instead of CLI args to set the user nickname to use
-SMUGMUG_PATH - Can be used instead of CLI args to set the expected SmugMug Path
 SMUGMUG_SYNC_LOCATION - Can be used instead of the --syncto arg
-TOKIO_WORKER_THREADS - Controls number of worker threads
-
+SMUGMUG_SYNC_WORKERS - Number of parallel smugmug req to make default is 1
 A .env file can be created in the working directory that contains these as well.
 "#;
 
@@ -52,7 +50,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Commands {
-    /// Synchronizes the Folder/Album and optionally Image data from SmugMug.  Does not overwrite if exits at synctodir
+    /// Synchronizes the Folder/Album and optionally Image data from SmugMug.  
+    ///   Does not overwrite if data already exists in the --syncto dir.
     #[command(arg_required_else_help = true)]
     Sync(SyncArgs),
 
@@ -81,13 +80,13 @@ pub(crate) struct SyncArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SmugMugPathArgs {
-    /// Path name to SmugMug location. Default to root node [/].
-    #[arg(short = 'p', long)]
-    pub(crate) path: Option<String>,
-
     /// Nickname of user for account to sync with. (Defaults to API user)
     #[arg(short = 'n', long)]
     pub(crate) nickname: Option<String>,
+    //
+    // /// Path name to SmugMug location. Default to root node [/].
+    // #[arg(short = 'p', long)]
+    // pub(crate) path: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -125,9 +124,9 @@ async fn handle_cli_arg(args: Cli) -> Result<()> {
             if sync_args.smugmug_path.nickname.is_none() {
                 sync_args.smugmug_path.nickname = std::env::var("SMUGMUG_NICKNAME").ok();
             }
-            if sync_args.smugmug_path.path.is_none() {
-                sync_args.smugmug_path.path = std::env::var("SMUGMUG_PATH").ok();
-            }
+            // if sync_args.smugmug_path.path.is_none() {
+            //     sync_args.smugmug_path.path = std::env::var("SMUGMUG_PATH").ok();
+            // }
             handle_synchronization_req(&local_path, sync_args).await?;
         }
         Commands::Query(query_args) => {
@@ -144,6 +143,7 @@ async fn main() -> Result<()> {
     env_logger::init();
     log::debug!("+++ syncer");
     let args = Cli::parse();
+
     handle_cli_arg(args).await?;
 
     // log::debug!("Folder: {}", folder);

@@ -9,8 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 const_format = "0.2"
-#smugmug = "0.3"
-smugmug = { path = "/Users/chamilton/wip/smugmug_rs" }
+smugmug = "0.4"
 url = "2"
 reqwest = "0.12"
 reqwest-oauth1 = "0.3"
@@ -35,3 +34,4 @@ zstd = "0.13"
 clap = { version = "4", features = ["derive"] }
 clap_derive = "4"
 humansize = "2"
+image = "0.25"

@@ -71,7 +71,7 @@ impl PathFinder {
     }
 
     pub(crate) fn get_artifacts_folder(&self) -> PathBuf {
-        let mut path = self.get_meta_db_path();
+        let mut path = self.base_path.clone();
         path.push(PathFinder::ARTIFACTS_FOLDER);
         path
     }

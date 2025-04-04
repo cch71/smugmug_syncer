@@ -9,13 +9,15 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    io::BufReader,
+    io::{BufReader, Cursor},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Result, anyhow};
 use futures::{StreamExt, future::TryJoinAll, pin_mut};
+use image::ImageReader;
 use smugmug::v2::{
     Album, Client, Image, Node, NodeType, NodeTypeFilters, SortDirection, SortMethod,
 };
@@ -30,9 +32,18 @@ type DsNode = TreeDs::Node<Arc<Node>, Arc<Album>>;
 pub struct SmugMugFolder {
     tree: DsTree,
     album_image_map: HashMap<String, Vec<Arc<Image>>>,
+    client_req_limiter: Arc<tokio::sync::Semaphore>,
 }
 
 impl SmugMugFolder {
+    // gets num concurrent requests allowed
+    fn get_num_concurrent_requests() -> usize {
+        std::env::var("SMUGMUG_SYNC_WORKERS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1) as usize
+    }
+
     /// Populates the tree starting from the given node
     pub async fn populate_from_node(client: Client, node: Node) -> Result<Self> {
         // Wrap the node in an Arc to make it cheaper to access in ds_tree
@@ -59,6 +70,9 @@ impl SmugMugFolder {
         Ok(Self {
             tree,
             album_image_map: HashMap::new(),
+            client_req_limiter: Arc::new(tokio::sync::Semaphore::new(
+                Self::get_num_concurrent_requests(),
+            )),
         })
     }
 
@@ -67,7 +81,9 @@ impl SmugMugFolder {
         // Collects the images for an album and returns a tuple of album key and image collection
         let image_child_collector = async |album: Arc<Album>| -> Result<(String, Vec<Arc<Image>>)> {
             log::debug!("Collecting image metadata for album: {}", &album);
+            let req_limiter = self.client_req_limiter.acquire().await.unwrap();
             let images = album.images_with_client(client.clone())?;
+            drop(req_limiter);
 
             let mut image_info_list = Vec::new();
             pin_mut!(images);
@@ -119,6 +135,9 @@ impl SmugMugFolder {
         Ok(Self {
             tree: self.tree.clone(),
             album_image_map,
+            client_req_limiter: Arc::new(tokio::sync::Semaphore::new(
+                Self::get_num_concurrent_requests(),
+            )),
         })
     }
 
@@ -144,6 +163,9 @@ impl SmugMugFolder {
         Ok(Self {
             tree,
             album_image_map,
+            client_req_limiter: Arc::new(tokio::sync::Semaphore::new(
+                Self::get_num_concurrent_requests(),
+            )),
         })
     }
 
@@ -261,25 +283,63 @@ impl SmugMugFolder {
             return Err(anyhow!("artifacts metadata must be populated"));
         }
 
+        // verifies the binary data
+        let binary_verifier = async |prefix_msg: &str, image: Arc<Image>, data: Vec<u8>| {
+            match image.archived_md5.as_ref() {
+                Some(md5sum) => {
+                    let digest = format!("{:x}", md5::compute(&data));
+                    if &digest != md5sum {
+                        log::warn!(
+                            "{}Artifact: {} md5sum didn't match: {} calculated:{}, size: {:?}, downloaded size: {}",
+                            prefix_msg,
+                            &image,
+                            md5sum,
+                            digest,
+                            image.archived_size,
+                            data.len()
+                        );
+                    }
+                }
+                None => {
+                    log::warn!(
+                        "{}Artifact: {} due to already exists. NOTE!!! The smugmug md5sum doesn't exist",
+                        prefix_msg,
+                        &image
+                    );
+                }
+            };
+
+            if let Err(err) = ImageReader::new(Cursor::new(data))
+                .with_guessed_format()
+                .map_err(anyhow::Error::from)
+                .and_then(|v| v.decode().map_err(anyhow::Error::from))
+            {
+                log::warn!(
+                    "Artifact: {} binary type failed to be detected: {:?}",
+                    image,
+                    err
+                );
+            }
+        };
+
+        // Downloads the artifact
         let artifact_downloader = async |image: Arc<Image>| -> Result<()> {
-            let client = client.clone();
             let mut path = PathBuf::from(path.as_ref());
             path.push(&image.image_key);
 
-            if let Some(md5sum) = image
-                .archived_md5
-                .as_ref()
-                .filter(|_| std::fs::exists(&path).unwrap_or_default())
-            {
+            if std::fs::exists(&path).unwrap_or_default() {
                 let existing_data = std::fs::read(&path)?;
-                let digest = format!("{:x}", md5::compute(existing_data));
-                if &digest == md5sum {
-                    log::debug!(
-                        "Skipping download of artifact: {} due to already exists",
-                        &image
-                    );
+                if !existing_data.is_empty() {
+                    // tokio::spawn(async move {
+                    //     binary_verifier("Skipping download of ", image, existing_data).await;
+                    // });
                     return Ok(());
                 }
+
+                log::warn!(
+                    "Artifact: {} exists but is empty size. Retrying download",
+                    &image
+                );
             }
 
             log::debug!(
@@ -288,41 +348,53 @@ impl SmugMugFolder {
                 path.as_os_str().to_string_lossy()
             );
 
-            let image_data = image.get_archive_with_client(client).await?;
-
-            match image.archived_md5.as_ref() {
-                Some(md5sum) => {
-                    let digest = format!("{:x}", md5::compute(&image_data));
-                    if &digest != md5sum {
-                        log::error!(
-                            "Image {} md5sum didn't match: {} calculated:{}, size: {:?}, downloaded size: {}",
-                            &image,
-                            md5sum,
-                            digest,
-                            image.archived_size,
-                            image_data.len()
-                        );
+            let mut retries = 0;
+            let image_data = loop {
+                let req_limiter = self.client_req_limiter.acquire().await.unwrap();
+                let image_get_result = image.get_archive_with_client(client.clone()).await;
+                drop(req_limiter);
+                match image_get_result {
+                    Ok(data) => break data,
+                    Err(err) => {
+                        retries += 1;
+                        if retries >= 3 {
+                            return Err(anyhow::Error::from(err));
+                        } else {
+                            log::warn!(
+                                "Downloading image: {} to: {} retry #: {}",
+                                &image,
+                                path.as_os_str().to_string_lossy(),
+                                retries,
+                            );
+                        }
                     }
                 }
-                None => log::error!("Image {} did not contain an md5sum", &image),
+                tokio::time::sleep(Duration::from_millis(500)).await;
             };
 
             if !image_data.is_empty() {
-                std::fs::write(&path, image_data)?;
-                log::debug!(
-                    "Finished downloading image: {} to: {}",
+                std::fs::write(&path, &image_data)?;
+                log::info!(
+                    "Downloaded Artifact: {} to: {}",
                     &image,
                     path.as_os_str().to_string_lossy()
                 );
+                tokio::spawn(async move {
+                    binary_verifier("", image, image_data.to_vec()).await;
+                });
             } else {
-                log::error!("Image: {} had 0 data", &image);
+                log::error!("Artifact: {} had 0 data", &image);
             }
 
             Ok(())
         };
 
-        self.get_unique_images()
-            .into_iter()
+        // sort it to make downloading predictable
+        let mut unique_artifacts = self.get_unique_artifacts_metadata();
+        unique_artifacts.sort();
+
+        let artifacts_iter = unique_artifacts.into_iter();
+        artifacts_iter
             .filter(|v| v.archived_uri.is_some())
             .map(artifact_downloader)
             .collect::<TryJoinAll<_>>()
@@ -332,7 +404,7 @@ impl SmugMugFolder {
     }
 
     /// Retrieves a unique list of images
-    pub fn get_unique_images(&self) -> Vec<Arc<Image>> {
+    pub fn get_unique_artifacts_metadata(&self) -> Vec<Arc<Image>> {
         self.album_image_map
             .values()
             .fold(HashSet::new(), |mut acc, v| {
@@ -360,7 +432,7 @@ impl SmugMugFolder {
 
         // If reading from a read only side the album data doesn't contain size so get it from the images
         if self.are_images_populated() {
-            let images = self.get_unique_images();
+            let images = self.get_unique_artifacts_metadata();
 
             let total_unique_image_size = images
                 .iter()

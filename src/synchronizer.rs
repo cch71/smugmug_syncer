@@ -48,7 +48,14 @@ pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Re
                 .await?
         }
     };
-
+    if let Some(rate_limits) = client.get_last_rate_limit_window_update() {
+        log::debug!(
+            "Request rate limits: Remaining: {:?} retry after(s): {:?} window: {:?}",
+            rate_limits.num_remaining_requests(),
+            rate_limits.retry_after_seconds(),
+            rate_limits.window_reset_datetime(),
+        );
+    }
     //TODO: use args.smugmug_path.path
 
     let local_folder = LocalFolder::get_or_create(

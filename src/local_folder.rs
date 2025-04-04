@@ -111,7 +111,7 @@ impl LocalFolder {
         Ok(Self {
             smugmug_folder,
             path_finder,
-            client: Some(client),
+            client: Some(client.to_owned()),
         })
     }
 
