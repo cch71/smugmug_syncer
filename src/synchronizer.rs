@@ -51,14 +51,18 @@ pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Re
 
     //TODO: use args.smugmug_path.path
 
-    let _local_folder = LocalFolder::get_or_create(
+    let local_folder = LocalFolder::get_or_create(
         path,
         client.clone(),
         node,
-        args.download_artifact_info,
+        args.download_artifact_info || args.download_artifacts,
         args.force,
     )
     .await?;
+
+    if args.download_artifacts {
+        local_folder.sync_artifacts().await?;
+    }
 
     // let end_limit = client
     //     .get_last_rate_limit_window_update()

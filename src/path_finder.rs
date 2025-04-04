@@ -18,6 +18,7 @@ impl PathFinder {
     const NODE_AND_ALBUM_DATA_FILE: &str = "node_and_album_tree.db";
     const ALBUM_IMAGE_MAP_FILE: &str = "album_image_map.db";
     const PROPS_FILE: &str = "props.json";
+    const ARTIFACTS_FOLDER: &str = "artifacts";
 
     pub(crate) fn new(base_path: &str) -> Result<Self> {
         let finder = Self {
@@ -66,6 +67,12 @@ impl PathFinder {
     pub(crate) fn get_album_image_map_file(&self) -> PathBuf {
         let mut path = self.get_meta_db_path();
         path.push(PathFinder::ALBUM_IMAGE_MAP_FILE);
+        path
+    }
+
+    pub(crate) fn get_artifacts_folder(&self) -> PathBuf {
+        let mut path = self.get_meta_db_path();
+        path.push(PathFinder::ARTIFACTS_FOLDER);
         path
     }
 }

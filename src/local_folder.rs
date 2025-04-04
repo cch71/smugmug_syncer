@@ -23,6 +23,7 @@ use crate::{
 pub struct LocalFolder {
     smugmug_folder: SmugMugFolder,
     path_finder: PathFinder,
+    client: Option<Client>,
 }
 
 impl LocalFolder {
@@ -38,6 +39,7 @@ impl LocalFolder {
         Ok(Self {
             smugmug_folder,
             path_finder,
+            client: None,
         })
     }
 
@@ -61,7 +63,7 @@ impl LocalFolder {
             if force_update_if_exists || !path_finder.does_album_and_node_data_file_exists()? {
                 log::debug!("downloading album and node data");
                 props.album_node_last_sync_ts = Some(Utc::now());
-                SmugMugFolder::populate_from_node(client.clone(), node).await?
+                SmugMugFolder::populate_from_node(client.to_owned(), node).await?
             } else {
                 // Retrieve all from file cache
                 let album_map_file_opt = if path_finder.does_album_image_map_file_exists()? {
@@ -82,18 +84,18 @@ impl LocalFolder {
         {
             log::debug!("downloading image data");
             props.image_map_last_sync_ts = Some(Utc::now());
-            smugmug_folder = smugmug_folder.populate_image_map(client).await?
+            smugmug_folder = smugmug_folder.populate_image_map(client.to_owned()).await?
         }
-
-        // Save generated tree to file
-        log::debug!("Saving folder metadata");
-        smugmug_folder.save_meta_data(
-            path_finder.get_album_and_node_data_file(),
-            path_finder.get_album_image_map_file(),
-        )?;
 
         // Save generic properties if they changed
         if !props.are_all_none() {
+            // Save generated tree to file
+            log::debug!("Saving folder metadata");
+            smugmug_folder.save_meta_data(
+                path_finder.get_album_and_node_data_file(),
+                path_finder.get_album_image_map_file(),
+            )?;
+
             log::debug!("Writing out props");
             let props_path = path_finder.get_props_file();
             let mut new_props = Self::read_props_file(&props_path).unwrap_or_default();
@@ -109,7 +111,30 @@ impl LocalFolder {
         Ok(Self {
             smugmug_folder,
             path_finder,
+            client: Some(client),
         })
+    }
+
+    /// Syncs Image/Video Data
+    pub async fn sync_artifacts(&self) -> Result<()> {
+        let client = self
+            .client
+            .clone()
+            .expect("Client wasn't found for sync artifacts operation");
+
+        // Get and create folder to sync artifacts to if not already created
+        let artifacts_folder = self.path_finder.get_artifacts_folder();
+        std::fs::create_dir_all(&artifacts_folder)?;
+
+        log::debug!(
+            "Sycing artifacts to: {}",
+            artifacts_folder.to_string_lossy()
+        );
+        self.smugmug_folder
+            .sync_artifacts(&artifacts_folder, client.clone())
+            .await?;
+
+        Ok(())
     }
 
     // Read props file

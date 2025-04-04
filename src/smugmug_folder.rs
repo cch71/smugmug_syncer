@@ -6,9 +6,15 @@
  *  at your option.
  */
 
-use std::{collections::HashMap, fs::File, io::BufReader, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::BufReader,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use futures::{StreamExt, future::TryJoinAll, pin_mut};
 use smugmug::v2::{
     Album, Client, Image, Node, NodeType, NodeTypeFilters, SortDirection, SortMethod,
@@ -60,6 +66,7 @@ impl SmugMugFolder {
     pub async fn populate_image_map(&self, client: Client) -> Result<Self> {
         // Collects the images for an album and returns a tuple of album key and image collection
         let image_child_collector = async |album: Arc<Album>| -> Result<(String, Vec<Arc<Image>>)> {
+            log::debug!("Collecting image metadata for album: {}", &album);
             let images = album.images_with_client(client.clone())?;
 
             let mut image_info_list = Vec::new();
@@ -93,10 +100,7 @@ impl SmugMugFolder {
         // Parallel way of doing it but harder on SmugMug API and debugging so disabling for now
         let album_image_map: HashMap<String, Vec<Arc<Image>>> = albums
             .into_iter()
-            .map(|album| {
-                log::debug!("Collecting images for: {}", &album);
-                image_child_collector(album)
-            })
+            .map(image_child_collector)
             .collect::<TryJoinAll<_>>()
             .await?
             .into_iter()
@@ -239,7 +243,7 @@ impl SmugMugFolder {
         };
 
         write_data(serde_json::to_vec(&self.tree)?, node_and_album_path)?;
-        if 0 != self.album_image_map.len() {
+        if !self.album_image_map.is_empty() {
             write_data(serde_json::to_vec(&self.album_image_map)?, image_map_path)?;
         }
 
@@ -249,6 +253,94 @@ impl SmugMugFolder {
     /// Return true if the image map is populated.
     pub fn are_images_populated(&self) -> bool {
         !self.album_image_map.is_empty()
+    }
+
+    /// Download artifacts from SmugMug to the given directory
+    pub async fn sync_artifacts<P: AsRef<Path>>(&self, path: P, client: Client) -> Result<()> {
+        if !self.are_images_populated() {
+            return Err(anyhow!("artifacts metadata must be populated"));
+        }
+
+        let artifact_downloader = async |image: Arc<Image>| -> Result<()> {
+            let client = client.clone();
+            let mut path = PathBuf::from(path.as_ref());
+            path.push(&image.image_key);
+
+            if let Some(md5sum) = image
+                .archived_md5
+                .as_ref()
+                .filter(|_| std::fs::exists(&path).unwrap_or_default())
+            {
+                let existing_data = std::fs::read(&path)?;
+                let digest = format!("{:x}", md5::compute(existing_data));
+                if &digest == md5sum {
+                    log::debug!(
+                        "Skipping download of artifact: {} due to already exists",
+                        &image
+                    );
+                    return Ok(());
+                }
+            }
+
+            log::debug!(
+                "Downloading image: {} to: {}",
+                &image,
+                path.as_os_str().to_string_lossy()
+            );
+
+            let image_data = image.get_archive_with_client(client).await?;
+
+            match image.archived_md5.as_ref() {
+                Some(md5sum) => {
+                    let digest = format!("{:x}", md5::compute(&image_data));
+                    if &digest != md5sum {
+                        log::error!(
+                            "Image {} md5sum didn't match: {} calculated:{}, size: {:?}, downloaded size: {}",
+                            &image,
+                            md5sum,
+                            digest,
+                            image.archived_size,
+                            image_data.len()
+                        );
+                    }
+                }
+                None => log::error!("Image {} did not contain an md5sum", &image),
+            };
+
+            if !image_data.is_empty() {
+                std::fs::write(&path, image_data)?;
+                log::debug!(
+                    "Finished downloading image: {} to: {}",
+                    &image,
+                    path.as_os_str().to_string_lossy()
+                );
+            } else {
+                log::error!("Image: {} had 0 data", &image);
+            }
+
+            Ok(())
+        };
+
+        self.get_unique_images()
+            .into_iter()
+            .filter(|v| v.archived_uri.is_some())
+            .map(artifact_downloader)
+            .collect::<TryJoinAll<_>>()
+            .await?;
+
+        Ok(())
+    }
+
+    /// Retrieves a unique list of images
+    pub fn get_unique_images(&self) -> Vec<Arc<Image>> {
+        self.album_image_map
+            .values()
+            .fold(HashSet::new(), |mut acc, v| {
+                acc.extend(v.iter().map(Arc::clone));
+                acc
+            })
+            .into_iter()
+            .collect()
     }
 
     /// Retrieves statistics about this folder
@@ -268,23 +360,13 @@ impl SmugMugFolder {
 
         // If reading from a read only side the album data doesn't contain size so get it from the images
         if self.are_images_populated() {
-            let images: HashMap<String, u64> = self
-                .album_image_map
-                .values()
-                .map(|v| {
-                    v.iter()
-                        .map(|v| (v.image_key.clone(), v.archived_size.unwrap_or_default()))
-                        .collect::<HashMap<String, u64>>()
-                })
-                .fold(
-                    HashMap::new(),
-                    |mut combined_map, mut map: HashMap<String, u64>| {
-                        combined_map.extend(map.drain());
-                        combined_map
-                    },
-                );
+            let images = self.get_unique_images();
 
-            let total_unique_image_size = images.values().fold(0, |acc, size| acc + size);
+            let total_unique_image_size = images
+                .iter()
+                .map(|v| v.archived_size.unwrap_or_default())
+                .sum::<u64>();
+
             acc.total_num_unique_images = images.len();
             acc.unique_image_data_usage_in_bytes = total_unique_image_size as usize;
         }
