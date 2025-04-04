@@ -8,8 +8,7 @@
 
 use smugmug::v2::{Client, User};
 
-use crate::PathFinder;
-use crate::smugmug_folder::SmugMugFolder;
+use crate::local_folder::LocalFolder;
 use crate::tokens::get_full_auth_tokens;
 use anyhow::Result;
 
@@ -29,8 +28,12 @@ async fn get_smugmug_client() -> Client {
         .clone()
 }
 
-async fn download_node_and_album_info(args: &SyncArgs) -> Result<SmugMugFolder> {
+// Handles the synchronization cli request
+pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Result<()> {
+    log::debug!("Sync args {:#?}", args);
+
     let client = get_smugmug_client().await;
+
     let node = match args.smugmug_path.nickname.as_ref() {
         None => {
             User::authenticated_user_info(client.clone())
@@ -48,41 +51,14 @@ async fn download_node_and_album_info(args: &SyncArgs) -> Result<SmugMugFolder> 
 
     //TODO: use args.smugmug_path.path
 
-    SmugMugFolder::populate_from_node(client.clone(), node).await
-}
-
-// Handles the syrchronizaition cli request
-pub(crate) async fn handle_synchronization_req(
-    path_finder: &PathFinder,
-    args: SyncArgs,
-) -> Result<()> {
-    log::debug!("Sync args {:#?}", args);
-    let mut folder = if args.force || !path_finder.does_album_and_node_data_file_exists()? {
-        download_node_and_album_info(&args).await?
-    } else {
-        // Retrieve all from file cache
-        let album_map_file_opt = if path_finder.does_album_image_map_file_exists()? {
-            Some(path_finder.get_album_image_map_file())
-        } else {
-            None
-        };
-        SmugMugFolder::populate_from_file(
-            path_finder.get_album_and_node_data_file(),
-            album_map_file_opt,
-        )?
-    };
-
-    // Download the Image/Video meta data
-    if args.download_artifact_info && (args.force || !folder.are_images_populated()) {
-        let client = get_smugmug_client().await;
-        folder = folder.populate_image_map(client).await?
-    }
-
-    // Save generated tree to file
-    folder.save_meta_data(
-        path_finder.get_album_and_node_data_file(),
-        path_finder.get_album_image_map_file(),
-    )?;
+    let _local_folder = LocalFolder::get_or_create(
+        path,
+        client.clone(),
+        node,
+        args.download_artifact_info,
+        args.force,
+    )
+    .await?;
 
     // let end_limit = client
     //     .get_last_rate_limit_window_update()
@@ -96,5 +72,6 @@ pub(crate) async fn handle_synchronization_req(
     //     start_limit - end_limit
     // );
 
+    log::debug!("Finished syncing");
     Ok(())
 }

@@ -5,7 +5,9 @@
  *  - MIT license <http://opensource.org/licenses/MIT>
  *  at your option.
  */
+mod local_folder;
 mod path_finder;
+mod querier;
 mod smugmug_folder;
 mod synchronizer;
 mod tokens;
@@ -14,10 +16,10 @@ use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use dotenvy::dotenv;
 use path_finder::PathFinder;
+use querier::handle_query_req;
 use synchronizer::handle_synchronization_req;
 
-/// CLI Definitions
-
+// CLI Definitions
 static LONG_ABOUT: &str = r#"
 This is a utility for backing up and getting information about SmugMug accounts.
 
@@ -30,6 +32,7 @@ SMUGMUG_AUTH_CACHE - Local path to cache authentication tokens
 SMUGMUG_NICKNAME - Can be used instead of CLI args to set the user nickname to use
 SMUGMUG_PATH - Can be used instead of CLI args to set the expected SmugMug Path
 SMUGMUG_SYNC_LOCATION - Can be used instead of the --syncto arg
+TOKIO_WORKER_THREADS - Controls number of worker threads
 
 A .env file can be created in the working directory that contains these as well.
 "#;
@@ -102,14 +105,7 @@ pub(crate) struct QueryArgs {
     pub(crate) calc_size: bool,
 }
 
-// CLI tool for synchronizing with smugmug accounts
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenv().ok();
-    env_logger::init();
-
-    let args = Cli::parse();
-
+async fn handle_cli_arg(args: Cli) -> Result<()> {
     let local_path = args
         .syncto
         .or(std::env::var("SMUGMUG_SYNC_LOCATION").ok())
@@ -121,10 +117,8 @@ async fn main() -> Result<()> {
             )
             .exit()
         });
-    log::debug!("Using Local Path: {}", &local_path);
 
-    // Use the path_finder to keep path specifics out of the SmugMugFolder logic
-    let path_finder = PathFinder::new(&local_path)?;
+    log::debug!("Using Local Path: {}", &local_path);
 
     match args.command {
         Commands::Sync(mut sync_args) => {
@@ -134,14 +128,26 @@ async fn main() -> Result<()> {
             if sync_args.smugmug_path.path.is_none() {
                 sync_args.smugmug_path.path = std::env::var("SMUGMUG_PATH").ok();
             }
-            handle_synchronization_req(&path_finder, sync_args).await?;
+            handle_synchronization_req(&local_path, sync_args).await?;
         }
         Commands::Query(query_args) => {
-            println!("Querying {:#?}", query_args);
+            handle_query_req(&local_path, query_args).await?;
         }
     };
+    Ok(())
+}
+
+// CLI tool for synchronizing with smugmug accounts
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenv().ok();
+    env_logger::init();
+    log::debug!("+++ syncer");
+    let args = Cli::parse();
+    handle_cli_arg(args).await?;
 
     // log::debug!("Folder: {}", folder);
+    log::debug!("--- syncer");
 
     Ok(())
 }

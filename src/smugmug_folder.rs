@@ -23,7 +23,7 @@ type DsNode = TreeDs::Node<Arc<Node>, Arc<Album>>;
 #[derive(Debug)]
 pub struct SmugMugFolder {
     tree: DsTree,
-    album_image_map: HashMap<String, Vec<Image>>,
+    album_image_map: HashMap<String, Vec<Arc<Image>>>,
 }
 
 impl SmugMugFolder {
@@ -59,14 +59,14 @@ impl SmugMugFolder {
     /// Go through the Albums and get the images information
     pub async fn populate_image_map(&self, client: Client) -> Result<Self> {
         // Collects the images for an album and returns a tuple of album key and image collection
-        let image_child_collector = async |album: Arc<Album>| -> Result<(String, Vec<Image>)> {
+        let image_child_collector = async |album: Arc<Album>| -> Result<(String, Vec<Arc<Image>>)> {
             let images = album.images_with_client(client.clone())?;
 
             let mut image_info_list = Vec::new();
             pin_mut!(images);
             while let Some(image_result) = images.next().await {
                 let image_info = image_result?;
-                image_info_list.push(image_info);
+                image_info_list.push(Arc::new(image_info));
             }
             log::debug!(
                 "Collected metadata for {} images for album: {}",
@@ -91,25 +91,26 @@ impl SmugMugFolder {
             .collect();
 
         // Parallel way of doing it but harder on SmugMug API and debugging so disabling for now
-        // let album_image_map: HashMap<String, Vec<Image>> = albums
-        //     .into_iter()
-        //     .map(|album_opt| {
-        //         log::debug!("Collecting images for: {}", &album);
-        //         image_child_collector(album)
-        //     })
-        //     .collect::<TryJoinAll<_>>()
-        //     .await?
-        //     .into_iter()
-        //     .collect();
+        let album_image_map: HashMap<String, Vec<Arc<Image>>> = albums
+            .into_iter()
+            .map(|album| {
+                log::debug!("Collecting images for: {}", &album);
+                image_child_collector(album)
+            })
+            .collect::<TryJoinAll<_>>()
+            .await?
+            .into_iter()
+            .collect();
 
-        let mut album_image_map = HashMap::new();
-        for album in albums {
-            log::debug!("Collecting images for: {}", &album);
-            let (id, image_collection) = image_child_collector(album).await?;
-            album_image_map.insert(id, image_collection);
-        }
+        // Serial way to get image information
+        // let mut album_image_map = HashMap::new();
+        // for album in albums {
+        //     log::debug!("Collecting images for: {}", &album);
+        //     let (id, image_collection) = image_child_collector(album).await?;
+        //     album_image_map.insert(id, image_collection);
+        // }
 
-        log::debug!("Finished collecting image meta data");
+        log::debug!("Finished collecting image metadata");
 
         Ok(Self {
             tree: self.tree.clone(),
@@ -131,7 +132,7 @@ impl SmugMugFolder {
         // let tree: DsTree = flexbuffers::from_slice(&reader)?;
         let tree: DsTree = serde_json::from_slice(&get_data(album_node_file)?)?;
 
-        let album_image_map: HashMap<String, Vec<Image>> = match image_map_file_opt {
+        let album_image_map: HashMap<String, Vec<Arc<Image>>> = match image_map_file_opt {
             Some(image_map) => serde_json::from_slice(&get_data(image_map)?)?,
             None => HashMap::new(),
         };
@@ -249,10 +250,66 @@ impl SmugMugFolder {
     pub fn are_images_populated(&self) -> bool {
         !self.album_image_map.is_empty()
     }
+
+    /// Retrieves statistics about this folder
+    pub fn get_folder_stats(&self) -> SmugMugFolderStats {
+        let mut acc = self
+            .tree
+            .get_nodes()
+            .iter()
+            .flat_map(|ds_node| ds_node.get_value())
+            .fold(SmugMugFolderStats::new(), |mut acc, album| {
+                acc.total_data_usage_in_bytes += album.total_sizes.unwrap_or_default() as usize;
+                acc.original_data_usage_in_bytes +=
+                    album.original_sizes.unwrap_or_default() as usize;
+                acc.total_num_images += album.image_count as usize;
+                acc
+            });
+
+        // If reading from a read only side the album data doesn't contain size so get it from the images
+        if self.are_images_populated() {
+            let images: HashMap<String, u64> = self
+                .album_image_map
+                .values()
+                .map(|v| {
+                    v.iter()
+                        .map(|v| (v.image_key.clone(), v.archived_size.unwrap_or_default()))
+                        .collect::<HashMap<String, u64>>()
+                })
+                .fold(
+                    HashMap::new(),
+                    |mut combined_map, mut map: HashMap<String, u64>| {
+                        combined_map.extend(map.drain());
+                        combined_map
+                    },
+                );
+
+            let total_unique_image_size = images.values().fold(0, |acc, size| acc + size);
+            acc.total_num_unique_images = images.len();
+            acc.unique_image_data_usage_in_bytes = total_unique_image_size as usize;
+        }
+
+        acc
+    }
 }
 
 impl std::fmt::Display for SmugMugFolder {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.tree)
+    }
+}
+#[derive(Debug, Default, Clone)]
+pub struct SmugMugFolderStats {
+    pub total_data_usage_in_bytes: usize,
+    pub original_data_usage_in_bytes: usize,
+    pub unique_image_data_usage_in_bytes: usize,
+    pub total_num_images: usize,
+    pub total_num_unique_images: usize,
+}
+impl SmugMugFolderStats {
+    fn new() -> Self {
+        Self {
+            ..Default::default()
+        }
     }
 }

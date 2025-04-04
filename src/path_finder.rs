@@ -14,6 +14,11 @@ pub(crate) struct PathFinder {
     base_path: PathBuf,
 }
 impl PathFinder {
+    const ROOT_PATH: &str = ".smugmug_db";
+    const NODE_AND_ALBUM_DATA_FILE: &str = "node_and_album_tree.db";
+    const ALBUM_IMAGE_MAP_FILE: &str = "album_image_map.db";
+    const PROPS_FILE: &str = "props.json";
+
     pub(crate) fn new(base_path: &str) -> Result<Self> {
         let finder = Self {
             base_path: PathBuf::from(base_path),
@@ -24,9 +29,15 @@ impl PathFinder {
         Ok(finder)
     }
 
-    fn get_meta_db_path(&self) -> PathBuf {
+    pub(crate) fn get_meta_db_path(&self) -> PathBuf {
         let mut path = self.base_path.clone();
-        path.push(".smugmug_db");
+        path.push(PathFinder::ROOT_PATH);
+        path
+    }
+
+    pub(crate) fn get_props_file(&self) -> PathBuf {
+        let mut path = self.get_meta_db_path();
+        path.push(PathFinder::PROPS_FILE);
         path
     }
 
@@ -36,8 +47,15 @@ impl PathFinder {
 
     pub(crate) fn get_album_and_node_data_file(&self) -> PathBuf {
         let mut path = self.get_meta_db_path();
-        path.push("node_and_album_tree.db");
+        path.push(PathFinder::NODE_AND_ALBUM_DATA_FILE);
         path
+    }
+
+    pub(crate) fn get_album_image_map_file_if_exists(&self) -> Option<PathBuf> {
+        match self.does_album_image_map_file_exists() {
+            Ok(true) => Some(self.get_album_image_map_file()),
+            _ => None,
+        }
     }
 
     pub(crate) fn does_album_image_map_file_exists(&self) -> Result<bool> {
@@ -47,7 +65,7 @@ impl PathFinder {
     #[allow(dead_code)]
     pub(crate) fn get_album_image_map_file(&self) -> PathBuf {
         let mut path = self.get_meta_db_path();
-        path.push("album_image_map.db");
+        path.push(PathFinder::ALBUM_IMAGE_MAP_FILE);
         path
     }
 }
