@@ -7,9 +7,11 @@
  */
 
 use anyhow::Result;
+use serde::Serialize;
 use std::path::PathBuf;
 
 // Builds the paths needed for storing data.
+#[derive(Debug, Serialize)]
 pub(crate) struct PathFinder {
     base_path: PathBuf,
 }

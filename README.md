@@ -66,7 +66,7 @@ smugmug-syncer --syncto ~/Pictures/Troop27SmugMugArchive query -p -c
 ```
 
 - `-p` causes the tree to be printed out
-- `-c` will cause sizes to be calculated
+- `-s` will cause statistics about metadata to be calculated
 
 Unless otherwise stated, the queries flags do not require the images/video artifacts to be downloaded.
 
@@ -119,8 +119,8 @@ Options:
           Prints the Folder/Album Tree
   -l, --list-images-from-album-id <LIST_IMAGES_FROM_ALBUM_ID>
           Show images for Album
-  -c, --calc-size
-          Calculates size synchronized data would take up
+  -s, --stats
+          Calculates stats about the synced metadata
   -h, --help
           Print help
 ```

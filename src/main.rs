@@ -99,9 +99,17 @@ pub(crate) struct QueryArgs {
     #[arg(short, long)]
     pub(crate) list_images_from_album_id: Option<String>,
 
-    /// Calculates size synchronized data would take up.
+    /// Calculates stats about the synced metadata.
     #[arg(short, long)]
-    pub(crate) calc_size: bool,
+    pub(crate) stats: bool,
+
+    /// Checks for invalid files
+    #[arg(long)]
+    pub(crate) check_for_invalid_artifacts: bool,
+
+    /// Outputs the results as JSON
+    #[arg(short = 'j', long)]
+    pub(crate) use_json_output: bool,
 }
 
 async fn handle_cli_arg(args: Cli) -> Result<()> {

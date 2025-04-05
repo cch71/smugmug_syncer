@@ -18,6 +18,7 @@ use std::{
 use anyhow::{Result, anyhow};
 use futures::{StreamExt, future::TryJoinAll, pin_mut};
 use image::ImageReader;
+use serde::Serialize;
 use smugmug::v2::{
     Album, Client, Image, Node, NodeType, NodeTypeFilters, SortDirection, SortMethod,
 };
@@ -28,10 +29,11 @@ type DsTree = TreeDs::Tree<Arc<Node>, Arc<Album>>;
 type DsNode = TreeDs::Node<Arc<Node>, Arc<Album>>;
 
 /// Represents a folder in SmugMug
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct SmugMugFolder {
     tree: DsTree,
     album_image_map: HashMap<String, Vec<Arc<Image>>>,
+    #[serde(skip)]
     client_req_limiter: Arc<tokio::sync::Semaphore>,
 }
 
@@ -121,14 +123,6 @@ impl SmugMugFolder {
             .await?
             .into_iter()
             .collect();
-
-        // Serial way to get image information
-        // let mut album_image_map = HashMap::new();
-        // for album in albums {
-        //     log::debug!("Collecting images for: {}", &album);
-        //     let (id, image_collection) = image_child_collector(album).await?;
-        //     album_image_map.insert(id, image_collection);
-        // }
 
         log::debug!("Finished collecting image metadata");
 
@@ -277,6 +271,93 @@ impl SmugMugFolder {
         !self.album_image_map.is_empty()
     }
 
+    pub async fn artifacts_verifier<P: AsRef<Path>>(&self, path: P) -> Result<Vec<String>> {
+        if !self.are_images_populated() {
+            return Err(anyhow!("artifacts metadata must be populated"));
+        }
+
+        let verifier = async |mut path: PathBuf, image: Arc<Image>| -> Result<Option<String>> {
+            path.push(&image.image_key);
+
+            if !std::fs::exists(&path).unwrap_or_default() {
+                return Ok(Some(format!("Artifact {}: not found", image)));
+            }
+
+            let data = std::fs::read(&path)?;
+            if data.is_empty() {
+                return Ok(Some(format!("Artifact {}: is empty", image)));
+            }
+
+            let metadata_report = if let Some(md5sum) = image.archived_md5.as_ref() {
+                let digest = format!("{:x}", md5::compute(&data));
+                if &digest != md5sum {
+                    format!(
+                        "Metadata doesn't match.  md5: {}:{}, size {},{}",
+                        md5sum,
+                        digest,
+                        image
+                            .archived_size
+                            .map(|v| v.to_string())
+                            .unwrap_or("?".to_string()),
+                        data.len()
+                    )
+                } else {
+                    String::new()
+                }
+            } else {
+                format!(
+                    "Metadata doesn't match.  md5: missing, size {},{}",
+                    image
+                        .archived_size
+                        .map(|v| v.to_string())
+                        .unwrap_or("?".to_string()),
+                    data.len()
+                )
+            };
+
+            let image_detection_report = match ImageReader::new(Cursor::new(data))
+                .with_guessed_format()
+                .map_err(anyhow::Error::from)
+                .and_then(|v| v.decode().map_err(anyhow::Error::from))
+            {
+                Err(err) => format!("Media detection failed: {:?}", err),
+                _ => String::new(),
+            };
+
+            let final_report = if metadata_report.is_empty() && image_detection_report.is_empty() {
+                None
+            } else {
+                let final_report = format!(
+                    "Artifact {}: {}",
+                    image,
+                    [metadata_report, image_detection_report].join(",")
+                );
+                Some(final_report)
+            };
+
+            Ok(final_report)
+        };
+
+        let results = self
+            .get_unique_artifacts_metadata()
+            .into_iter()
+            .filter(|v| v.archived_uri.is_some())
+            .map(|v| {
+                let path = PathBuf::from(path.as_ref());
+                tokio::spawn(async move { verifier(path, v).await })
+            })
+            .collect::<TryJoinAll<_>>()
+            .await?
+            .into_iter()
+            .collect::<Result<Vec<Option<String>>>>()?
+            .iter_mut()
+            .filter(|v| v.is_some())
+            .map(|v| v.take().unwrap())
+            .collect();
+
+        Ok(results)
+    }
+
     /// Download artifacts from SmugMug to the given directory
     pub async fn sync_artifacts<P: AsRef<Path>>(&self, path: P, client: Client) -> Result<()> {
         if !self.are_images_populated() {
@@ -389,12 +470,8 @@ impl SmugMugFolder {
             Ok(())
         };
 
-        // sort it to make downloading predictable
-        let mut unique_artifacts = self.get_unique_artifacts_metadata();
-        unique_artifacts.sort();
-
-        let artifacts_iter = unique_artifacts.into_iter();
-        artifacts_iter
+        self.get_unique_artifacts_metadata()
+            .into_iter()
             .filter(|v| v.archived_uri.is_some())
             .map(artifact_downloader)
             .collect::<TryJoinAll<_>>()
@@ -434,13 +511,16 @@ impl SmugMugFolder {
         if self.are_images_populated() {
             let images = self.get_unique_artifacts_metadata();
 
-            let total_unique_image_size = images
-                .iter()
-                .map(|v| v.archived_size.unwrap_or_default())
-                .sum::<u64>();
+            let (mut formats, total_unique_image_size) =
+                images.iter().fold((HashSet::new(), 0), |mut acc, v| {
+                    acc.0.insert(v.format.to_uppercase());
+                    acc.1 += v.archived_size.unwrap_or_default();
+                    acc
+                });
 
             acc.total_num_unique_images = images.len();
             acc.unique_image_data_usage_in_bytes = total_unique_image_size as usize;
+            acc.artifact_formats_found = Vec::from_iter(formats.drain());
         }
 
         acc
@@ -452,13 +532,14 @@ impl std::fmt::Display for SmugMugFolder {
         write!(f, "{}", self.tree)
     }
 }
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct SmugMugFolderStats {
     pub total_data_usage_in_bytes: usize,
     pub original_data_usage_in_bytes: usize,
     pub unique_image_data_usage_in_bytes: usize,
     pub total_num_images: usize,
     pub total_num_unique_images: usize,
+    pub artifact_formats_found: Vec<String>,
 }
 impl SmugMugFolderStats {
     fn new() -> Self {

@@ -20,9 +20,12 @@ use crate::{
 };
 
 /// Manages the local folder
+#[derive(Debug, Serialize)]
 pub struct LocalFolder {
     smugmug_folder: SmugMugFolder,
+    #[serde(skip)]
     path_finder: PathFinder,
+    #[serde(skip)]
     client: Option<Client>,
 }
 
@@ -154,6 +157,14 @@ impl LocalFolder {
     /// Calculate smugmug disk space
     pub fn get_smugmug_folder_stats(&self) -> SmugMugFolderStats {
         self.smugmug_folder.get_folder_stats()
+    }
+
+    /// Calculate smugmug disk space
+    pub async fn check_for_invalid_artifacts(&self) -> Result<Vec<String>> {
+        let artifacts_folder = self.path_finder.get_artifacts_folder();
+        self.smugmug_folder
+            .artifacts_verifier(artifacts_folder)
+            .await
     }
 }
 
