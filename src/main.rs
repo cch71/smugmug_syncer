@@ -17,7 +17,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use dotenvy::dotenv;
 use path_finder::PathFinder;
 use querier::handle_query_req;
-use synchronizer::handle_synchronization_req;
+use synchronizer::{handle_clear_key_req, handle_synchronization_req};
 
 // CLI Definitions
 static LONG_ABOUT: &str = r#"
@@ -58,6 +58,10 @@ pub(crate) enum Commands {
     /// Performs analysis of synced data
     #[command(arg_required_else_help = true)]
     Query(QueryArgs),
+
+    /// Clears the upload keys from the albums in a folder
+    #[command(arg_required_else_help = false)]
+    ClearKeys(ClearUploadKeysArgs),
 }
 
 #[derive(Debug, Args)]
@@ -76,6 +80,20 @@ pub(crate) struct SyncArgs {
     /// Forces resync of data
     #[arg(long)]
     pub(crate) force: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ClearUploadKeysArgs {
+    /// Days since album was last updated.  Default to 45
+    #[arg(long)]
+    pub(crate) days_since_last_album_update: Option<u16>,
+
+    /// Days since album was created.  Defaults to 60
+    #[arg(long)]
+    pub(crate) days_since_album_was_created: Option<u16>,
+
+    #[command(flatten)]
+    pub(crate) smugmug_path: SmugMugPathArgs,
 }
 
 #[derive(Debug, Args)]
@@ -139,6 +157,9 @@ async fn handle_cli_arg(args: Cli) -> Result<()> {
         }
         Commands::Query(query_args) => {
             handle_query_req(&local_path, query_args).await?;
+        }
+        Commands::ClearKeys(clear_key_args) => {
+            handle_clear_key_req(&local_path, clear_key_args).await?;
         }
     };
     Ok(())

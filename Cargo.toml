@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 const_format = "0.2"
-smugmug = "0.4"
+smugmug = "0.5"
 url = "2"
 reqwest = "0.12"
 reqwest-oauth1 = "0.3"
@@ -29,7 +29,6 @@ tree-ds = { version = "0.1", features = [
 ] }
 log = "0.4"
 env_logger = "0.11"
-# flexbuffers = "25"
 zstd = "0.13"
 clap = { version = "4", features = ["derive"] }
 clap_derive = "4"

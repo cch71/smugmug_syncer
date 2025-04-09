@@ -6,13 +6,13 @@
  *  at your option.
  */
 
-use smugmug::v2::{Client, User};
+use smugmug::v2::{Client, Node, User};
 
-use crate::local_folder::LocalFolder;
 use crate::tokens::get_full_auth_tokens;
+use crate::{SmugMugPathArgs, local_folder::LocalFolder};
 use anyhow::Result;
 
-use crate::SyncArgs;
+use crate::{ClearUploadKeysArgs, SyncArgs};
 
 static CLIENT: tokio::sync::OnceCell<Client> = tokio::sync::OnceCell::const_new();
 
@@ -28,13 +28,8 @@ async fn get_smugmug_client() -> Client {
         .clone()
 }
 
-// Handles the synchronization cli request
-pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Result<()> {
-    log::debug!("Sync args {:#?}", args);
-
-    let client = get_smugmug_client().await;
-
-    let node = match args.smugmug_path.nickname.as_ref() {
+async fn get_node(client: Client, smugmug_path: &SmugMugPathArgs) -> Result<Node> {
+    let node = match smugmug_path.nickname.as_ref() {
         None => {
             User::authenticated_user_info(client.clone())
                 .await?
@@ -57,6 +52,16 @@ pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Re
         );
     }
     //TODO: use args.smugmug_path.path
+    Ok(node)
+}
+
+// Handles the synchronization cli request
+pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Result<()> {
+    log::debug!("Sync args {:#?}", args);
+
+    let client = get_smugmug_client().await;
+
+    let node = get_node(client.clone(), &args.smugmug_path).await?;
 
     let local_folder = LocalFolder::get_or_create(
         path,
@@ -84,5 +89,22 @@ pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Re
     // );
 
     log::debug!("Finished syncing");
+    Ok(())
+}
+
+pub(crate) async fn handle_clear_key_req(path: &str, args: ClearUploadKeysArgs) -> Result<()> {
+    log::trace!("Clearing upload keys {:#?}", args);
+    let client = get_smugmug_client().await;
+    let node = get_node(client.clone(), &args.smugmug_path).await?;
+
+    let local_folder = LocalFolder::get_or_create(path, client.clone(), node, false, false).await?;
+    let num_removed = local_folder
+        .remove_albums_upload_keys(
+            args.days_since_album_was_created.unwrap_or(60),
+            args.days_since_last_album_update.unwrap_or(45),
+        )
+        .await?;
+
+    println!("Upload keys removed from {num_removed} albums");
     Ok(())
 }

@@ -16,6 +16,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use chrono::Utc;
 use futures::{StreamExt, future::TryJoinAll, pin_mut};
 use image::ImageReader;
 use serde::Serialize;
@@ -271,6 +272,7 @@ impl SmugMugFolder {
         !self.album_image_map.is_empty()
     }
 
+    /// Verifes artifacts are not corrupted
     pub async fn artifacts_verifier<P: AsRef<Path>>(&self, path: P) -> Result<Vec<String>> {
         if !self.are_images_populated() {
             return Err(anyhow!("artifacts metadata must be populated"));
@@ -524,6 +526,38 @@ impl SmugMugFolder {
         }
 
         acc
+    }
+
+    /// Removes the upload keys based on the given parameters.  Returns number of albums
+    /// upload keys were removed from
+    pub async fn remove_albums_upload_keys(
+        &self,
+        client: Client,
+        days_since_created: u16,
+        days_since_last_updated: u16,
+    ) -> Result<usize> {
+        let cutoff_from_date_created_dt =
+            Utc::now() - chrono::Duration::days(days_since_created as i64);
+        let last_updated_cutoff_dt =
+            Utc::now() - chrono::Duration::days(days_since_last_updated as i64);
+
+        let albums_with_upload_keys: Vec<Arc<Album>> = self
+            .tree
+            .get_nodes()
+            .iter()
+            .flat_map(|ds_node| ds_node.get_value())
+            .filter(|album| {
+                album.upload_key.is_some()
+                    && (cutoff_from_date_created_dt > album.date_created.unwrap_or(Utc::now())
+                        || last_updated_cutoff_dt > album.last_updated)
+            })
+            .collect();
+        let num_albums_to_remove = albums_with_upload_keys.len();
+        for album in albums_with_upload_keys {
+            log::info!("Removing Upload Key From: {}", album);
+            album.clear_upload_key_with_client(client.clone()).await?;
+        }
+        Ok(num_albums_to_remove)
     }
 }
 

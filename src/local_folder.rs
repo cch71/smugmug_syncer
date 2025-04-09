@@ -166,6 +166,22 @@ impl LocalFolder {
             .artifacts_verifier(artifacts_folder)
             .await
     }
+
+    /// Removes the upload keys based on the given parameters.  Returns number of albums
+    /// upload keys were removed from
+    pub async fn remove_albums_upload_keys(
+        &self,
+        days_since_created: u16,
+        days_since_last_updated: u16,
+    ) -> Result<usize> {
+        let client = self.client.clone().expect("Client wasn't found");
+
+        let num_removed = self
+            .smugmug_folder
+            .remove_albums_upload_keys(client, days_since_created, days_since_last_updated)
+            .await?;
+        Ok(num_removed)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
