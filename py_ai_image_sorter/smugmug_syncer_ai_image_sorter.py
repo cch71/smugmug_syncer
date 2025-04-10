@@ -1,14 +1,11 @@
 import glob
 import io
 import json
-import logging
 import os
 import queue
-import time
 import uuid
 from dataclasses import dataclass
 from multiprocessing import Process, cpu_count, freeze_support, JoinableQueue
-from pathlib import Path
 
 import cv2
 import dlib
@@ -18,30 +15,25 @@ import zstandard
 from _dlib_pybind11 import rectangle
 from dotenv import load_dotenv
 
+from log_config import log
+
 load_dotenv()
 
-
-class UtcFormatter(logging.Formatter):
-    def formatTime(self, record, datefmt=None):
-        ct = time.gmtime(record.created)
-        if datefmt:
-            s = time.strftime(datefmt, ct)
-        else:
-            t = time.strftime("%Y-%m-%dT%H:%M:%S", ct)
-            s = f"{t}.{int(record.msecs):03d}Z"
-        return s
-
-
-log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
-formatter = UtcFormatter("%(asctime)s - %(levelname)s - %(message)s")
-handler = logging.StreamHandler()
-handler.setFormatter(formatter)
-log.addHandler(handler)
+from file_locations import (
+    SMUGMUG_LOCAL_FACE_IMAGE_DIR,
+    SMUGMUG_LOCAL_FACE_TAGS_FILE,
+    SMUGMUG_LOCAL_CACHE_DETECTIONS_DIR,
+    SMUGMUG_LOCAL_CACHE_PATH,
+    SMUGMUG_LOCAL_CACHE_DETECTION_FILE_PREFIX,
+)
 
 
 @dataclass
 class FaceDetection:
+    """
+    Container for a single face detection
+    """
+
     id: str | None
     image: str
     embedding: np.ndarray
@@ -58,22 +50,18 @@ FACEREC = dlib.face_recognition_model_v1("dlib_face_recognition_resnet_model_v1.
 # Num of CPUs on system
 NUMBER_OF_PROCESSES = cpu_count()
 
-SMUGMUG_LOCAL_CACHE_PATH = Path(os.getenv("SMUGMUG_SYNC_LOCATION"))
-SMUGMUG_LOCAL_CACHE_DETECTIONS_DIR = SMUGMUG_LOCAL_CACHE_PATH.joinpath(
-    "face_detections"
-)
-SMUGMUG_LOCAL_CACHE_DETECTION_FILE_PREFIX = "detections"
-SMUGMUG_LOCAL_FACE_TAGS_FILE = SMUGMUG_LOCAL_CACHE_PATH.joinpath(
-    "face_detections", "labels.json"
-)
-SMUGMUG_LOCAL_FACE_IMAGE_DIR = SMUGMUG_LOCAL_CACHE_PATH.joinpath(
-    "face_detections", "face_images"
-)
-
 CHECKPOINT_SAVE_SIZE = 1000
 
 
 def try_img_save(image, face_rect, face_id):
+    """
+    Saves off the image of just the face.  For this stage it is putting them all in one folder
+    when it is done another util will sort them into people folder
+    :param image: image data
+    :param face_rect: rect of the face in the image
+    :param face_id: the name to call it
+    :return: None
+    """
     if not SMUGMUG_LOCAL_FACE_IMAGE_DIR.exists():
         SMUGMUG_LOCAL_FACE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -89,6 +77,16 @@ def try_img_save(image, face_rect, face_id):
 
 
 def process_image_worker(image_q, detection_q):
+    """
+    Takes an image path and
+        - reads it in from input q
+        - detects faces and creates a FaceDetection record
+        - save off face image
+        - pushes it into an out q for further analysis
+    :param image_q: Input q of image paths to operate on
+    :param detection_q: Output queue where detections will go
+    :return: None
+    """
     while True:
         try:
             image_path = image_q.get(
@@ -121,7 +119,7 @@ def process_image_worker(image_q, detection_q):
                     try_img_save(image, face_rect, face_id)
 
                     detection = FaceDetection(
-                        id=f"face_{img_id}_{idx}",
+                        id=f"{img_id}_{idx}",
                         image=img_id,
                         embedding=np.array(face_embedding),
                         window_in_image_json=face_str,
@@ -142,6 +140,12 @@ def process_image_worker(image_q, detection_q):
 
 
 def do_faces_likely_match(embedding1, embedding2):
+    """
+    Determines is 2 embeddings are closely related
+    :param embedding1:
+    :param embedding2:
+    :return:
+    """
     if len(embedding1) == 0:
         return False
 
@@ -154,6 +158,13 @@ def new_embeddings_save_dict():
 
 
 def checkpoint_save_data(embeddings_to_save, sorted_faces, is_final):
+    """
+    Called periodically to save off data so that if an error occurs, it doesn't have to start over
+    :param embeddings_to_save: FaceDetection list to save off
+    :param sorted_faces: This is the state of the faces sorted into close matches i.e. "people"
+    :param is_final: for the last save the sorted_faces list are removed of duplicates
+    :return: None
+    """
     if not SMUGMUG_LOCAL_CACHE_DETECTIONS_DIR.exists():
         SMUGMUG_LOCAL_CACHE_DETECTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -186,6 +197,10 @@ def checkpoint_save_data(embeddings_to_save, sorted_faces, is_final):
 
 
 def load_saved_detections():
+    """
+    Loads any previously saved values
+    :return: the sorted_faces and embedded_lookup dicts populated from data or empty
+    """
     sorted_faces = {}
     embedding_lookup = {}
     # TODO: This is as robust if things are missing. Assuming if directory exists everything inside it is correct
@@ -211,6 +226,12 @@ def load_saved_detections():
 
 
 def process_detection(detection_q):
+    """
+    Reads a FaceDetection from the detection_q and compares it with known 'people'
+    after x detection it does a checkpoint save for recovery in case of crash
+    :param detection_q: Input q of FaceDetection
+    :return: None
+    """
     sorted_faces, embedding_lookup = load_saved_detections()
     to_save = new_embeddings_save_dict()
 
@@ -255,6 +276,9 @@ def process_detection(detection_q):
 
 
 def get_unique_image_list():
+    """
+    :return: Unique list of image ids that are to have detection ran against
+    """
     with open(
             SMUGMUG_LOCAL_CACHE_PATH.joinpath(".smugmug_db", "album_image_map.db"), "rb"
     ) as f:
@@ -275,6 +299,9 @@ def get_unique_image_list():
 
 
 def get_already_processed_image_list():
+    """
+    :return: set of image ids that have already been processed
+    """
     already_processed_images = set()
     parquet_files = SMUGMUG_LOCAL_CACHE_DETECTIONS_DIR.joinpath("*.parquet")
     if len(glob.glob(str(parquet_files))) > 0:
@@ -285,6 +312,11 @@ def get_already_processed_image_list():
 
 
 def process_images(image_q):
+    """
+    Reads image list in, builds paths from them, and adds them to the q if they haven't already been processed
+    :param image_q: q of images to be processed
+    :return: None
+    """
     images = get_unique_image_list()
     already_processed_images = get_already_processed_image_list()
 
@@ -300,6 +332,12 @@ def process_images(image_q):
 
 
 def start_worker(fn, args):
+    """
+    Starts a worker proc
+    :param fn: Function to run in proc
+    :param args: args for worker
+    :return: worker id
+    """
     p = Process(target=fn, args=args)
     p.start()
     return p
