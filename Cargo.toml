@@ -34,3 +34,9 @@ clap = { version = "4", features = ["derive"] }
 clap_derive = "4"
 humansize = "2"
 image = "0.25"
+cxx = "1"
+ciborium = { version = "0.2" }
+
+[build-dependencies]
+cxx-build = "1"
+pkg-config = "0.3"

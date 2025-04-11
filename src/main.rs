@@ -10,6 +10,7 @@ mod path_finder;
 mod querier;
 mod smugmug_folder;
 mod synchronizer;
+mod tagging;
 mod tokens;
 
 use anyhow::Result;
@@ -18,6 +19,18 @@ use dotenvy::dotenv;
 use path_finder::PathFinder;
 use querier::handle_query_req;
 use synchronizer::{handle_clear_key_req, handle_synchronization_req};
+use tagging::handle_tagging_req;
+
+macro_rules! fill_smugmug_path_args_from_env {
+    ($a:expr) => {
+        if $a.smugmug_path.nickname.is_none() {
+            $a.smugmug_path.nickname = std::env::var("SMUGMUG_NICKNAME").ok();
+        }
+        // if $a.smugmug_path.path.is_none() {
+        //     $a.smugmug_path.path = std::env::var("SMUGMUG_PATH").ok();
+        // }
+    };
+}
 
 // CLI Definitions
 static LONG_ABOUT: &str = r#"
@@ -62,6 +75,10 @@ pub(crate) enum Commands {
     /// Clears the upload keys from the albums in a folder
     #[command(arg_required_else_help = false)]
     ClearKeys(ClearUploadKeysArgs),
+
+    /// Tagging functionality
+    #[command(arg_required_else_help = true)]
+    Tags(TaggingArgs),
 }
 
 #[derive(Debug, Args)]
@@ -130,6 +147,28 @@ pub(crate) struct QueryArgs {
     pub(crate) use_json_output: bool,
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct TaggingArgs {
+    /// Generates thumbnails and embeddings from the images
+    #[arg(long)]
+    pub(crate) gen_thumbnails_and_embeddings: bool,
+
+    /// Generates labels based on images found in the pre-sorted thumbnails directory
+    #[arg(long)]
+    pub(crate) gen_labels: bool,
+
+    /// Directory where thumbnails have been manually sorted
+    #[arg(short = 'd', long)]
+    pub(crate) presorted_thumbnails_dir: bool,
+
+    /// Update smugmug image tags
+    #[arg(long)]
+    pub(crate) update_smugmug_tags: bool,
+
+    #[command(flatten)]
+    pub(crate) smugmug_path: SmugMugPathArgs,
+}
+
 async fn handle_cli_arg(args: Cli) -> Result<()> {
     let local_path = args
         .syncto
@@ -147,19 +186,20 @@ async fn handle_cli_arg(args: Cli) -> Result<()> {
 
     match args.command {
         Commands::Sync(mut sync_args) => {
-            if sync_args.smugmug_path.nickname.is_none() {
-                sync_args.smugmug_path.nickname = std::env::var("SMUGMUG_NICKNAME").ok();
-            }
-            // if sync_args.smugmug_path.path.is_none() {
-            //     sync_args.smugmug_path.path = std::env::var("SMUGMUG_PATH").ok();
-            // }
+            fill_smugmug_path_args_from_env!(sync_args);
             handle_synchronization_req(&local_path, sync_args).await?;
         }
         Commands::Query(query_args) => {
             handle_query_req(&local_path, query_args).await?;
         }
-        Commands::ClearKeys(clear_key_args) => {
+        Commands::ClearKeys(mut clear_key_args) => {
+            fill_smugmug_path_args_from_env!(clear_key_args);
             handle_clear_key_req(&local_path, clear_key_args).await?;
+        }
+        Commands::Tags(mut tagging_args) => {
+            fill_smugmug_path_args_from_env!(tagging_args);
+            // log::debug!("Tagging args {:#?}", tagging_args);
+            handle_tagging_req(&local_path, tagging_args).await?;
         }
     };
     Ok(())
