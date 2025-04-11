@@ -68,7 +68,7 @@ def try_img_save(image, face_rect, face_id):
     x, y = face_rect["x"], face_rect["y"]
     w, h = face_rect["w"], face_rect["h"]
 
-    face_img_location = image[y: y + h, x: x + w]
+    face_img_location = image[y : y + h, x : x + w]
     face_img_out_path = SMUGMUG_LOCAL_FACE_IMAGE_DIR.joinpath(f"{face_id}.jpg")
     try:
         cv2.imwrite(str(face_img_out_path), face_img_location)
@@ -280,7 +280,7 @@ def get_unique_image_list():
     :return: Unique list of image ids that are to have detection ran against
     """
     with open(
-            SMUGMUG_LOCAL_CACHE_PATH.joinpath(".smugmug_db", "album_image_map.db"), "rb"
+        SMUGMUG_LOCAL_CACHE_PATH.joinpath(".smugmug_db", "album_image_map.db"), "rb"
     ) as f:
         text_buffer = io.BytesIO()
         decompressor = zstandard.ZstdDecompressor()

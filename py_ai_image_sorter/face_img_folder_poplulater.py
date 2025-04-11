@@ -33,7 +33,8 @@ class Worker(threading.Thread):
         person_dir.mkdir(parents=True, exist_ok=True)
         for face_id in self.faces:
             # copy to folder
-            face_id = face_id[len("face_"):]
+            if face_id.startswith("face_"):
+                face_id = face_id[len("face_") :]
             img_file_name = f"{face_id}.jpg"
             face_file_in = SMUGMUG_LOCAL_FACE_IMAGE_DIR.joinpath(img_file_name)
             face_file_out = person_dir.joinpath(img_file_name)
