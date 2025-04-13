@@ -352,9 +352,8 @@ impl SmugMugFolder {
             .await?
             .into_iter()
             .collect::<Result<Vec<Option<String>>>>()?
-            .iter_mut()
-            .filter(|v| v.is_some())
-            .map(|v| v.take().unwrap())
+            .into_iter()
+            .flatten()
             .collect();
 
         Ok(results)

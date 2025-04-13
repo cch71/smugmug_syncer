@@ -142,6 +142,9 @@ Useful for not having to specify it on the command line repeatedly.
 `SMUGMUG_SYNC_LOCATION` - Can be used instead of the --syncto arg
 `SMUGMUG_SYNC_WORKERS` - Number of parallel SmugMug req to make default is 1
 
+`SMUGMUG_SYNC_MODELS_DIR` - Directory that holds the data models for the facial
+recognition/tagging functionality
+
 _A .env file can be created in the working directory that contains these as well._
 
 ## License

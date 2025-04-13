@@ -77,4 +77,28 @@ impl PathFinder {
         path.push(PathFinder::ARTIFACTS_FOLDER);
         path
     }
+
+    fn get_facial_detections_dir(&self) -> PathBuf {
+        let mut path = self.base_path.clone();
+        path.push("facial_detections");
+        path
+    }
+
+    pub(crate) fn get_facial_thumbnails_dir(&self) -> PathBuf {
+        let mut path = self.get_facial_detections_dir();
+        path.push("thumbnails");
+        path
+    }
+
+    pub(crate) fn get_facial_embeddings_dir(&self) -> PathBuf {
+        let mut path = self.get_facial_detections_dir();
+        path.push("embeddings");
+        path
+    }
+
+    pub(crate) fn get_facial_tags_file(&self) -> PathBuf {
+        let mut path = self.get_facial_detections_dir();
+        path.push("facial_tags.json");
+        path
+    }
 }

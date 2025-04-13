@@ -6,20 +6,31 @@
  *  at your option.
  */
 
-use std::{fs::File, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use futures::future::TryJoinAll;
+use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use smugmug::v2::{Client, Node};
 use std::io::BufReader;
+use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::{
     PathFinder,
+    face_detector::{FaceDetection, find_faces},
     smugmug_folder::{SmugMugFolder, SmugMugFolderStats},
 };
 
 /// Manages the local folder
+///
+///
 #[derive(Debug, Serialize)]
 pub struct LocalFolder {
     smugmug_folder: SmugMugFolder,
@@ -119,6 +130,8 @@ impl LocalFolder {
     }
 
     /// Syncs Image/Video Data
+    ///
+    ///
     pub async fn sync_artifacts(&self) -> Result<()> {
         let client = self
             .client
@@ -140,7 +153,9 @@ impl LocalFolder {
         Ok(())
     }
 
-    // Read props file
+    /// Read props file
+    ///
+    ///
     fn read_props_file(path: &PathBuf) -> Option<Props> {
         File::open(path).ok().and_then(|f| {
             let rdr = BufReader::new(f);
@@ -148,18 +163,24 @@ impl LocalFolder {
         })
     }
 
-    // Write props file
+    /// Write props file
+    ///
+    ///
     fn write_props_file(path: &PathBuf, props: Props) -> Result<()> {
         let props_str = serde_json::to_string_pretty(&props)?;
         Ok(std::fs::write(path, props_str)?)
     }
 
     /// Calculate smugmug disk space
+    ///
+    ///
     pub fn get_smugmug_folder_stats(&self) -> SmugMugFolderStats {
         self.smugmug_folder.get_folder_stats()
     }
 
     /// Calculate smugmug disk space
+    ///
+    ///
     pub async fn check_for_invalid_artifacts(&self) -> Result<Vec<String>> {
         let artifacts_folder = self.path_finder.get_artifacts_folder();
         self.smugmug_folder
@@ -169,6 +190,8 @@ impl LocalFolder {
 
     /// Removes the upload keys based on the given parameters.  Returns number of albums
     /// upload keys were removed from
+    ///
+    ///
     pub async fn remove_albums_upload_keys(
         &self,
         days_since_created: u16,
@@ -181,6 +204,255 @@ impl LocalFolder {
             .remove_albums_upload_keys(client, days_since_created, days_since_last_updated)
             .await?;
         Ok(num_removed)
+    }
+
+    /// Generates thumbnails and embeddings for the images in the artifacts folder
+    ///
+    pub async fn generate_thumbnails_and_embeddings(&self) -> Result<()> {
+        let facial_embeddings_dir = self.path_finder.get_facial_embeddings_dir();
+        let artifacts_dir = self.path_finder.get_artifacts_folder();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        // worker that generates the embedding
+        let face_detector_worker =
+            move |image_path: PathBuf, thumbnail_dir: PathBuf, tx: mpsc::UnboundedSender<_>| {
+                log::trace!("Processing image: {}", image_path.display());
+                let detections = match find_faces(
+                    image_path.to_str().unwrap(),
+                    Some(thumbnail_dir.to_str().unwrap()),
+                ) {
+                    Ok(detections) => detections,
+                    Err(e) => {
+                        log::error!(
+                            "Error processing image {}: {}",
+                            image_path.file_stem().unwrap().to_str().unwrap(),
+                            e
+                        );
+                        return;
+                    }
+                };
+
+                log::debug!(
+                    "Finished processing image: {} found {} faces",
+                    image_path.file_stem().unwrap().to_str().unwrap(),
+                    &detections.iter().filter(|v| v.face_id.is_some()).count()
+                );
+
+                if let Err(e) = tx.send(detections) {
+                    log::error!(
+                        "Failed sending detection results for image {}: {}",
+                        image_path.file_stem().unwrap().to_str().unwrap(),
+                        e
+                    );
+                }
+            };
+
+        // Read in parquet lazy data frames from the facial embeddings
+        // directory and find all the existing facial embeddings image_ids
+        // to not process them again
+        let processed_image_ids: Vec<String> =
+            get_dataframe(&facial_embeddings_dir, [col("image_id")])?
+                .unique(None, UniqueKeepStrategy::Any)
+                .collect()?
+                .column("image_id")?
+                .str()?
+                .into_iter()
+                .filter_map(|v| v.map(|s| s.to_string()))
+                .collect();
+        log::debug!(
+            "Found {} processed images in the facial embeddings directory",
+            processed_image_ids.len()
+        );
+
+        // create workers to process the images if they have not already been processed
+        self.smugmug_folder
+            .get_unique_artifacts_metadata()
+            .into_iter()
+            .filter(|v| {
+                !v.is_video
+                    && !processed_image_ids.contains(&v.image_key)
+                    && artifacts_dir.join(&v.image_key).exists()
+            })
+            .for_each(|v| {
+                let facial_thumbnail_dir = self.path_finder.get_facial_thumbnails_dir();
+                let image_path = artifacts_dir.join(&v.image_key);
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    face_detector_worker(image_path, facial_thumbnail_dir, tx);
+                });
+            });
+
+        drop(tx); // Close the channel so it knowns to stop getting messages
+
+        // save the dataframe to parquet
+        fn checkpoint_save_builder(
+            builder: &mut DetectionDataFrameBuilder,
+            path: &Path,
+        ) -> Result<()> {
+            let mut df = builder.build()?;
+
+            let file_id = Uuid::new_v4().simple().to_string();
+            let file_path = path.join(format!("embeddings_{}.parquet", file_id));
+
+            log::debug!(
+                "Doing checkpoint save for: {} at: {}",
+                &df,
+                file_path.display()
+            );
+
+            let file = File::create(file_path)?;
+            ParquetWriter::new(file)
+                .with_compression(ParquetCompression::Zstd(None))
+                .finish(&mut df)?;
+
+            Ok(())
+        }
+
+        // Create facial embeddings directory if it doesn't exist
+        match std::fs::create_dir_all(&facial_embeddings_dir) {
+            Ok(_) => {}
+            Err(ref error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error.into()); // Return the error
+            }
+        }
+
+        // wait for the workers to send facial detections and finish
+        let mut face_detector_df_builder = DetectionDataFrameBuilder::new();
+        while let Some(detections) = rx.recv().await {
+            // Add the detections to the DataFrame builder
+            for detection in detections {
+                face_detector_df_builder.add_detection(detection);
+            }
+
+            // Check if the detections has reached a certain size
+            if face_detector_df_builder.len() > 1000 {
+                checkpoint_save_builder(&mut face_detector_df_builder, &facial_embeddings_dir)?;
+
+                // Reset the builder
+                face_detector_df_builder = DetectionDataFrameBuilder::new();
+            }
+        }
+
+        // Save the remaining DataFrame
+        log::debug!("Finished processing images and saving remaining detections");
+        if face_detector_df_builder.len() > 0 {
+            checkpoint_save_builder(&mut face_detector_df_builder, &facial_embeddings_dir)?;
+            // For safety
+            drop(face_detector_df_builder);
+        }
+
+        Ok(())
+    }
+
+    /// Generates labels based on the images found in the pre-sorted thumbnails directory and comparing
+    /// the embeddings for those to the unsorted images in the facial thumbnails directory
+    ///
+    /// This will:
+    /// - Read in the thumbnails in the pre-sorted directory
+    /// - Load in the embeddings associanted with the images
+    /// - Compare them to the unsorted images in the facial thumbnails directory
+    /// - Generate the labels (using the directory names in the pre-sorted directory) and the compaison
+    ///
+    pub async fn generate_labels_from_presorted_dir(
+        &self,
+        presorted_thumbnail_dir: &str,
+    ) -> Result<()> {
+        let facial_embeddings_dir = self.path_finder.get_facial_embeddings_dir();
+        let detection_df =
+            get_dataframe(&facial_embeddings_dir, [col("face_id"), col("embeddings")])?;
+
+        // Reads the given directory and returns the facial embeddings based on the images it finds
+        fn embeddings_collecter(
+            label_dir: PathBuf,
+            thumbnail_dir: PathBuf,
+            df: LazyFrame,
+        ) -> Result<(String, Vec<FaceDetection>)> {
+            // Fn to extract the detection from the DataFrame for a given face_id
+            fn extract_detection(face_id: String, df: LazyFrame) -> Result<FaceDetection> {
+                let filtered = df
+                    .filter(col("face_id").eq(lit(face_id.clone())))
+                    .limit(1)
+                    .collect()?;
+                let embeddings_series = filtered
+                    .column("embeddings")?
+                    .list()?
+                    .get(0)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Float64Chunked>()
+                    .unwrap()
+                    .iter()
+                    .flatten()
+                    .collect::<Vec<f64>>();
+                Ok(FaceDetection {
+                    image_id: face_id[..face_id.len() - 2].to_string(),
+                    face_id: Some(face_id),
+                    embeddings: Some(embeddings_series),
+                    ..Default::default()
+                })
+            }
+
+            // let facial_thumbnail_dir = self.path_finder.get_facial_thumbnails_dir();
+            // scan the label_dir for the facial thumbnails
+            let image_ids_to_get_embedding: HashSet<String> = std::fs::read_dir(thumbnail_dir)?
+                .filter_map(|entry| {
+                    entry.ok().and_then(|entry| {
+                        let path = entry.path();
+                        if path.is_file() {
+                            Some(path.file_stem().unwrap().to_str().unwrap().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+
+            // Go through the facial embeddings directory and find the face_id
+            // for the image_id
+            let found_detections: Vec<FaceDetection> = image_ids_to_get_embedding
+                .into_iter()
+                .map(|v| extract_detection(v, df.clone()))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((
+                label_dir.file_name().unwrap().to_str().unwrap().to_string(),
+                found_detections,
+            ))
+        }
+
+        // The top dirs found are the labels
+        let label_dirs: Vec<PathBuf> = std::fs::read_dir(presorted_thumbnail_dir)?
+            .filter_map(|entry| {
+                entry.ok().and_then(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() { Some(path) } else { None }
+                })
+            })
+            .collect();
+        log::debug!("Top dirs: {:?}", label_dirs);
+
+        // Collect embeddings for the found facial thumbnails in these folders
+        let loaded_embeddings: HashMap<String, Vec<FaceDetection>> = label_dirs
+            .into_iter()
+            .map(|path| {
+                let thumbnail_dir = PathBuf::from(presorted_thumbnail_dir);
+                let df = detection_df.clone();
+                tokio::spawn(async move { embeddings_collecter(path, thumbnail_dir, df) })
+            })
+            .collect::<TryJoinAll<_>>()
+            .await?
+            .into_iter()
+            .filter_map(|v| {
+                if let Ok((label, detections)) = v {
+                    Some((label, detections))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(())
     }
 }
 
@@ -200,4 +472,65 @@ impl std::fmt::Display for LocalFolder {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.smugmug_folder)
     }
+}
+
+/// Builder for the Face Detection DataFrame
+///
+#[derive(Default)]
+struct DetectionDataFrameBuilder {
+    image_ids: Vec<String>,
+    face_ids: Vec<Option<String>>,
+    embeddings: Vec<Series>,
+    rect_x: Vec<Option<i32>>,
+    rect_y: Vec<Option<i32>>,
+    rect_w: Vec<Option<i32>>,
+    rect_h: Vec<Option<i32>>,
+}
+impl DetectionDataFrameBuilder {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn add_detection(&mut self, detection: FaceDetection) {
+        self.image_ids.push(detection.image_id);
+        self.face_ids.push(detection.face_id);
+        let series_embedding: Series = detection
+            .embeddings
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        self.embeddings.push(series_embedding);
+        if let Some(rect) = detection.rect_in_image {
+            self.rect_x.push(Some(rect.x));
+            self.rect_y.push(Some(rect.y));
+            self.rect_w.push(Some(rect.w));
+            self.rect_h.push(Some(rect.h));
+        } else {
+            self.rect_x.push(None);
+            self.rect_y.push(None);
+            self.rect_w.push(None);
+            self.rect_h.push(None);
+        }
+    }
+    fn len(&self) -> usize {
+        self.image_ids.len()
+    }
+
+    fn build(&mut self) -> Result<polars::prelude::DataFrame> {
+        let df = df![
+            "image_id" => self.image_ids.to_owned(),
+            "face_id" => self.face_ids.to_owned(),
+            "x" => self.rect_x.to_owned(),
+            "y" => self.rect_y.to_owned(),
+            "w" => self.rect_w.to_owned(),
+            "h" => self.rect_h.to_owned(),
+            "embeddings" => self.embeddings.to_owned(),
+        ]?;
+        Ok(df)
+    }
+}
+
+fn get_dataframe<E: AsRef<[Expr]>>(root_path: &Path, exprs: E) -> Result<LazyFrame> {
+    let parquet_glob = root_path.join("*.parquet");
+    let lf = LazyFrame::scan_parquet(parquet_glob, Default::default())?;
+    Ok(lf.select(exprs))
 }

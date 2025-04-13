@@ -12,6 +12,7 @@ mod smugmug_folder;
 mod synchronizer;
 mod tagging;
 mod tokens;
+mod face_detector;
 
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
@@ -157,9 +158,9 @@ pub(crate) struct TaggingArgs {
     #[arg(long)]
     pub(crate) gen_labels: bool,
 
-    /// Directory where thumbnails have been manually sorted
+    /// Directory where thumbnails have been manually sorted. REQUIRED if --gen-labels is set
     #[arg(short = 'd', long)]
-    pub(crate) presorted_thumbnails_dir: bool,
+    pub(crate) presorted_thumbnails_dir: Option<String>,
 
     /// Update smugmug image tags
     #[arg(long)]
@@ -198,7 +199,6 @@ async fn handle_cli_arg(args: Cli) -> Result<()> {
         }
         Commands::Tags(mut tagging_args) => {
             fill_smugmug_path_args_from_env!(tagging_args);
-            // log::debug!("Tagging args {:#?}", tagging_args);
             handle_tagging_req(&local_path, tagging_args).await?;
         }
     };

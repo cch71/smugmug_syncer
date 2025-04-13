@@ -108,3 +108,7 @@ pub(crate) async fn handle_clear_key_req(path: &str, args: ClearUploadKeysArgs) 
     println!("Upload keys removed from {num_removed} albums");
     Ok(())
 }
+
+pub(crate) async fn handle_updating_tags_req(smugmug_path: &SmugMugPathArgs) -> Result<()> {
+    todo!()
+}
