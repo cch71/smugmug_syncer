@@ -29,7 +29,7 @@ pub(crate) async fn handle_tagging_req(path: &str, args: TaggingArgs) -> Result<
             }
             Some(ref presorted_thumbnails_dir) => {
                 local_folder
-                    .generate_labels_from_presorted_dir(&presorted_thumbnails_dir)
+                    .generate_labels_from_presorted_dir(presorted_thumbnails_dir)
                     .await?;
             }
         }

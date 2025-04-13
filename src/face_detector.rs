@@ -39,6 +39,25 @@ pub struct FaceDetection {
     pub rect_in_image: Option<FaceRect>,
 }
 
+impl FaceDetection {
+    /// Compare the embeddings of two faces and return the distance between them
+    pub fn compare_embeddings(&self, other: &Self) -> f64 {
+        if let (Some(embeddings1), Some(embeddings2)) = (&self.embeddings, &other.embeddings) {
+            let mut sum = 0.0;
+            for (e1, e2) in embeddings1.iter().zip(embeddings2.iter()) {
+                sum += (e1 - e2).powi(2);
+            }
+            sum.sqrt()
+        } else {
+            f64::MAX
+        }
+    }
+    /// Compare the embeddings of two faces and return true if they are the same face
+    pub fn is_same_face(&self, other: &Self) -> bool {
+        self.compare_embeddings(other) < 0.6
+    }
+}
+
 // find faces and return their encodings as well as optionally saving a thumbnail of any found faces
 pub(crate) fn find_faces(
     image_path: &str,

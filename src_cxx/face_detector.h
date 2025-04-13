@@ -10,12 +10,6 @@
 
 #include <vector>
 
-/* 
-@brief Load the face detection, landmarks, and recognition models.
-
-*/
-bool load_models();
-
 /*
 @brief Find face encodings in an image.
 @param image_path Path to the image file.

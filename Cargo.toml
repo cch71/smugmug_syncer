@@ -46,6 +46,7 @@ polars = { version = "0.46", features = [
     "streaming",
     "performant",
     "object",
+    "is_in",
 ] }
 uuid = { version = "1", features = ["v4"] }
 

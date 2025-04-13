@@ -19,7 +19,7 @@ use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use smugmug::v2::{Client, Node};
 use std::io::BufReader;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::{
@@ -351,7 +351,7 @@ impl LocalFolder {
     ///
     /// This will:
     /// - Read in the thumbnails in the pre-sorted directory
-    /// - Load in the embeddings associanted with the images
+    /// - Load in the embeddings associated with the images
     /// - Compare them to the unsorted images in the facial thumbnails directory
     /// - Generate the labels (using the directory names in the pre-sorted directory) and the compaison
     ///
@@ -363,39 +363,53 @@ impl LocalFolder {
         let detection_df =
             get_dataframe(&facial_embeddings_dir, [col("face_id"), col("embeddings")])?;
 
+        // Fn to extract the detection from the DataFrame for a given face_id
+        fn extract_detections(
+            face_ids: HashSet<String>,
+            df: LazyFrame,
+        ) -> Result<Vec<FaceDetection>> {
+            let face_id_filter_values: Vec<&str> = face_ids.iter().map(String::as_str).collect();
+            let filter_series = Series::new("face_id_filter".into(), face_id_filter_values);
+
+            let filtered = df
+                .filter(col("face_id").is_in(lit(filter_series)))
+                .collect()?;
+
+            let face_ids = filtered.column("face_id")?.str()?;
+            let image_ids = filtered.column("image_id")?.str()?;
+            let embeddings_col = filtered.column("embeddings")?.list()?;
+
+            let mut results = Vec::new();
+
+            for i in 0..filtered.height() {
+                let face_id = face_ids.get(i).map(|s| s.to_string());
+                let image_id = image_ids.get(i).unwrap_or("").to_string();
+
+                let embedding_series_opt = embeddings_col.get_as_series(i);
+
+                let embedding = embedding_series_opt.and_then(|series| {
+                    series
+                        .f64()
+                        .ok()
+                        .map(|chunked| chunked.into_no_null_iter().collect::<Vec<f64>>())
+                });
+
+                results.push(FaceDetection {
+                    embeddings: embedding,
+                    image_id,
+                    face_id,
+                    ..Default::default()
+                });
+            }
+            Ok(results)
+        }
+
         // Reads the given directory and returns the facial embeddings based on the images it finds
-        fn embeddings_collecter(
-            label_dir: PathBuf,
+        fn embeddings_collector_for_dir(
             thumbnail_dir: PathBuf,
             df: LazyFrame,
-        ) -> Result<(String, Vec<FaceDetection>)> {
-            // Fn to extract the detection from the DataFrame for a given face_id
-            fn extract_detection(face_id: String, df: LazyFrame) -> Result<FaceDetection> {
-                let filtered = df
-                    .filter(col("face_id").eq(lit(face_id.clone())))
-                    .limit(1)
-                    .collect()?;
-                let embeddings_series = filtered
-                    .column("embeddings")?
-                    .list()?
-                    .get(0)
-                    .unwrap()
-                    .as_any()
-                    .downcast_ref::<Float64Chunked>()
-                    .unwrap()
-                    .iter()
-                    .flatten()
-                    .collect::<Vec<f64>>();
-                Ok(FaceDetection {
-                    image_id: face_id[..face_id.len() - 2].to_string(),
-                    face_id: Some(face_id),
-                    embeddings: Some(embeddings_series),
-                    ..Default::default()
-                })
-            }
-
-            // let facial_thumbnail_dir = self.path_finder.get_facial_thumbnails_dir();
-            // scan the label_dir for the facial thumbnails
+        ) -> Result<Vec<FaceDetection>> {
+            // scan the given dir for the facial thumbnails and extract their image id
             let image_ids_to_get_embedding: HashSet<String> = std::fs::read_dir(thumbnail_dir)?
                 .filter_map(|entry| {
                     entry.ok().and_then(|entry| {
@@ -409,16 +423,11 @@ impl LocalFolder {
                 })
                 .collect();
 
-            // Go through the facial embeddings directory and find the face_id
-            // for the image_id
-            let found_detections: Vec<FaceDetection> = image_ids_to_get_embedding
-                .into_iter()
-                .map(|v| extract_detection(v, df.clone()))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok((
-                label_dir.file_name().unwrap().to_str().unwrap().to_string(),
-                found_detections,
-            ))
+            // extract the FaceDetection for the found image ids
+            let found_detections: Vec<FaceDetection> =
+                extract_detections(image_ids_to_get_embedding, df.clone())?;
+
+            Ok(found_detections)
         }
 
         // The top dirs found are the labels
@@ -433,17 +442,22 @@ impl LocalFolder {
         log::debug!("Top dirs: {:?}", label_dirs);
 
         // Collect embeddings for the found facial thumbnails in these folders
-        let loaded_embeddings: HashMap<String, Vec<FaceDetection>> = label_dirs
+        let pre_sorted_embeddings: HashMap<String, Vec<FaceDetection>> = label_dirs
             .into_iter()
-            .map(|path| {
-                let thumbnail_dir = PathBuf::from(presorted_thumbnail_dir);
+            .map(|label_dir| {
                 let df = detection_df.clone();
-                tokio::spawn(async move { embeddings_collecter(path, thumbnail_dir, df) })
+                tokio::spawn(async move {
+                    let label = label_dir.file_name().unwrap().to_str().unwrap().to_string();
+
+                    let embeddings = embeddings_collector_for_dir(label_dir, df)?;
+
+                    Ok::<(String, Vec<FaceDetection>), anyhow::Error>((label, embeddings))
+                })
             })
-            .collect::<TryJoinAll<_>>()
+            .collect::<TryJoinAll<JoinHandle<Result<_, _>>>>()
             .await?
             .into_iter()
-            .filter_map(|v| {
+            .filter_map(|v: Result<(String, Vec<FaceDetection>), _>| {
                 if let Ok((label, detections)) = v {
                     Some((label, detections))
                 } else {
@@ -451,6 +465,51 @@ impl LocalFolder {
                 }
             })
             .collect();
+
+        log::debug!("Pre-sorted embeddings: {:?}", pre_sorted_embeddings);
+        // Compare the embeddings to the unsorted images in the facial thumbnails directory
+        let unsorted_embeddings =
+            embeddings_collector_for_dir(facial_embeddings_dir.clone(), detection_df)?;
+
+        // For each of the unsorted images, find the label it belongs to
+        let mut sorted_images: HashMap<&str, Vec<String>> = HashMap::new();
+
+        unsorted_embeddings.into_iter().for_each(|unknown| {
+            for (label, known_detections) in &pre_sorted_embeddings {
+                let num_matches = known_detections
+                    .iter()
+                    .filter(|known| known.is_same_face(&unknown))
+                    .count();
+                if num_matches as f32 / known_detections.len() as f32 > 0.3 {
+                    sorted_images
+                        .entry(label.as_str())
+                        .or_default()
+                        .push(unknown.image_id.clone());
+                }
+            }
+        });
+
+        log::debug!("Sorted images: {:?}", sorted_images);
+        let sorted_thumbnail_dir = self.path_finder.get_sorted_facial_thumbnails_dir();
+        std::fs::create_dir_all(&sorted_thumbnail_dir)?;
+
+        // For each of the labels, create a directory and move the images into it
+        for (label, image_ids) in sorted_images {
+            let label_dir = sorted_thumbnail_dir.join(label);
+            std::fs::create_dir_all(&label_dir)?;
+            image_ids.iter().for_each(|image_id| {
+                let src_image_path = self.path_finder.get_facial_thumbnails_dir().join(image_id);
+                let new_image_path = label_dir.join(image_id);
+                if !new_image_path.exists() && src_image_path.exists() {
+                    log::debug!(
+                        "Moving image {} to {}",
+                        src_image_path.display(),
+                        new_image_path.display()
+                    );
+                    std::fs::rename(src_image_path, new_image_path).unwrap();
+                }
+            });
+        }
 
         Ok(())
     }

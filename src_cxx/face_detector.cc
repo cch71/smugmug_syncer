@@ -259,16 +259,6 @@ std::unique_ptr<std::vector<uint8_t>> find_face_encodings_in_image(std::string c
     return std::make_unique<std::vector<uint8_t>>(json::to_cbor(detections));
 }
 
-////////////////////////////////////////////////////
-// Load models
-bool load_models()
-{
-    // return (std::nullopt != get_cnn_detector() &&
-    //         std::nullopt != get_shape_predictor() &&
-    //         std::nullopt != get_dnn_detector());
-    return true;
-}
-
 #if defined(FACE_TAGGER_BUILD_EXE)
 ////////////////////////////////////////////////////
 // Main function

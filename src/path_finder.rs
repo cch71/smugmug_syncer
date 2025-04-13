@@ -90,6 +90,12 @@ impl PathFinder {
         path
     }
 
+    pub(crate) fn get_sorted_facial_thumbnails_dir(&self) -> PathBuf {
+        let mut path = self.get_facial_detections_dir();
+        path.push("sorted_thumbnails");
+        path
+    }
+
     pub(crate) fn get_facial_embeddings_dir(&self) -> PathBuf {
         let mut path = self.get_facial_detections_dir();
         path.push("embeddings");

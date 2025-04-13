@@ -109,6 +109,6 @@ pub(crate) async fn handle_clear_key_req(path: &str, args: ClearUploadKeysArgs) 
     Ok(())
 }
 
-pub(crate) async fn handle_updating_tags_req(smugmug_path: &SmugMugPathArgs) -> Result<()> {
+pub(crate) async fn handle_updating_tags_req(_smugmug_path: &SmugMugPathArgs) -> Result<()> {
     todo!()
 }
