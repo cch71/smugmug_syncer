@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 // Builds the paths needed for storing data.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub(crate) struct PathFinder {
     base_path: PathBuf,
 }
@@ -21,6 +21,11 @@ impl PathFinder {
     const ALBUM_IMAGE_MAP_FILE: &str = "album_image_map.db";
     const PROPS_FILE: &str = "props.json";
     const ARTIFACTS_FOLDER: &str = "artifacts";
+    const FACIAL_DETECTION_DIR: &str = "facial_detections";
+    const FACIAL_THUMBNAILS_DIR: &str = "thumbnails";
+    const FACIAL_SORTED_THUMBNAILS_DIR: &str = "sorted_thumbnails";
+    const FACIAL_EMBEDDINGS_DIR: &str = "embeddings";
+    const FACIAL_TAGS_FILE: &str = "facial_tags.json";
 
     pub(crate) fn new(base_path: &str) -> Result<Self> {
         let finder = Self {
@@ -80,31 +85,31 @@ impl PathFinder {
 
     fn get_facial_detections_dir(&self) -> PathBuf {
         let mut path = self.base_path.clone();
-        path.push("facial_detections");
+        path.push(PathFinder::FACIAL_DETECTION_DIR);
         path
     }
 
     pub(crate) fn get_facial_thumbnails_dir(&self) -> PathBuf {
         let mut path = self.get_facial_detections_dir();
-        path.push("thumbnails");
+        path.push(PathFinder::FACIAL_THUMBNAILS_DIR);
         path
     }
 
     pub(crate) fn get_sorted_facial_thumbnails_dir(&self) -> PathBuf {
         let mut path = self.get_facial_detections_dir();
-        path.push("sorted_thumbnails");
+        path.push(PathFinder::FACIAL_SORTED_THUMBNAILS_DIR);
         path
     }
 
     pub(crate) fn get_facial_embeddings_dir(&self) -> PathBuf {
         let mut path = self.get_facial_detections_dir();
-        path.push("embeddings");
+        path.push(PathFinder::FACIAL_EMBEDDINGS_DIR);
         path
     }
 
     pub(crate) fn get_facial_tags_file(&self) -> PathBuf {
         let mut path = self.get_facial_detections_dir();
-        path.push("facial_tags.json");
+        path.push(PathFinder::FACIAL_TAGS_FILE);
         path
     }
 }

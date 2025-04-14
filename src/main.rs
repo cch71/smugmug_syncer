@@ -5,6 +5,8 @@
  *  - MIT license <http://opensource.org/licenses/MIT>
  *  at your option.
  */
+mod face_detector;
+mod label_maker;
 mod local_folder;
 mod path_finder;
 mod querier;
@@ -12,7 +14,6 @@ mod smugmug_folder;
 mod synchronizer;
 mod tagging;
 mod tokens;
-mod face_detector;
 
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};

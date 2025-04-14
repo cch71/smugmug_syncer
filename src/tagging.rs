@@ -20,7 +20,9 @@ pub(crate) async fn handle_tagging_req(path: &str, args: TaggingArgs) -> Result<
 
     if args.gen_thumbnails_and_embeddings {
         local_folder.generate_thumbnails_and_embeddings().await?;
-    } else if args.gen_labels {
+    }
+
+    if args.gen_labels {
         match args.presorted_thumbnails_dir {
             None => {
                 return Err(anyhow::anyhow!(
@@ -33,8 +35,6 @@ pub(crate) async fn handle_tagging_req(path: &str, args: TaggingArgs) -> Result<
                     .await?;
             }
         }
-    } else {
-        return Err(anyhow::anyhow!("No valid tagging option provided"));
     }
 
     Ok(())

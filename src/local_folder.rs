@@ -7,24 +7,23 @@
  */
 
 use std::{
-    collections::{HashMap, HashSet},
     fs::File,
     path::{Path, PathBuf},
 };
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use futures::future::TryJoinAll;
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use smugmug::v2::{Client, Node};
 use std::io::BufReader;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
     PathFinder,
     face_detector::{FaceDetection, find_faces},
+    label_maker::LabelMaker,
     smugmug_folder::{SmugMugFolder, SmugMugFolderStats},
 };
 
@@ -364,176 +363,10 @@ impl LocalFolder {
             &facial_embeddings_dir,
             [col("face_id"), col("image_id"), col("embeddings")],
         )?;
-
-        // Fn to extract the detection from the DataFrame for a given face_id
-        fn extract_detections(
-            face_ids: HashSet<String>,
-            df: LazyFrame,
-        ) -> Result<Vec<FaceDetection>> {
-            log::trace!("Extracting detections for: {}", &face_ids.len());
-            let face_id_filter_values: Vec<&str> = face_ids.iter().map(String::as_str).collect();
-            let filter_series = Series::new("face_id_filter".into(), face_id_filter_values);
-
-            let filtered = df
-                .filter(col("face_id").is_in(lit(filter_series)))
-                .collect()?;
-
-            let face_ids = filtered.column("face_id")?.str()?;
-            let image_ids = filtered.column("image_id")?.str()?;
-            let embeddings_col = filtered.column("embeddings")?.list()?;
-
-            let mut results = Vec::new();
-
-            for i in 0..filtered.height() {
-                let face_id = face_ids.get(i).map(|s| s.to_string());
-                let image_id = image_ids.get(i).unwrap_or("").to_string();
-
-                let embedding_series_opt = embeddings_col.get_as_series(i);
-
-                let embedding = embedding_series_opt.and_then(|series| {
-                    series
-                        .f64()
-                        .ok()
-                        .map(|chunked| chunked.into_no_null_iter().collect::<Vec<f64>>())
-                });
-
-                results.push(FaceDetection {
-                    embeddings: embedding,
-                    image_id,
-                    face_id,
-                    ..Default::default()
-                });
-            }
-            Ok(results)
-        }
-
-        // Reads the given directory and returns the facial embeddings based on the images it finds
-        fn embeddings_collector_for_dir(
-            thumbnail_dir: PathBuf,
-            df: LazyFrame,
-        ) -> Result<Vec<FaceDetection>> {
-            // scan the given dir for the facial thumbnails and extract their image id
-            let image_ids_to_get_embedding: HashSet<String> = std::fs::read_dir(&thumbnail_dir)?
-                .filter_map(|entry| {
-                    entry.ok().and_then(|entry| {
-                        let path = entry.path();
-                        if path.is_file() {
-                            Some(path.file_stem().unwrap().to_str().unwrap().to_string())
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .collect();
-
-            // extract the FaceDetection for the found image ids
-            let found_detections: Vec<FaceDetection> =
-                extract_detections(image_ids_to_get_embedding, df.clone())?;
-
-            log::debug!(
-                "For {} found these detections {}",
-                thumbnail_dir.display(),
-                &found_detections.len()
-            );
-
-            Ok(found_detections)
-        }
-
-        // The top dirs found are the labels
-        let label_dirs: Vec<PathBuf> = std::fs::read_dir(presorted_thumbnail_dir)?
-            .filter_map(|entry| {
-                entry.ok().and_then(|entry| {
-                    let path = entry.path();
-                    if path.is_dir() { Some(path) } else { None }
-                })
-            })
-            .collect();
-        log::debug!("Top dirs: {:?}", label_dirs);
-
-        // Collect embeddings for the found facial thumbnails in these folders
-        let pre_sorted_embeddings: HashMap<String, Vec<FaceDetection>> = label_dirs
-            .into_iter()
-            .map(|label_dir| {
-                let df = detection_df.clone();
-                tokio::spawn(async move {
-                    let label = label_dir.file_name().unwrap().to_str().unwrap().to_string();
-                    log::debug!("Processing label {} dir: {}", &label, label_dir.display());
-                    let embeddings = embeddings_collector_for_dir(label_dir.clone(), df)?;
-                    log::trace!(
-                        "Finished processing label {} dir: {}",
-                        &label,
-                        label_dir.display()
-                    );
-
-                    Ok::<(String, Vec<FaceDetection>), anyhow::Error>((label, embeddings))
-                })
-            })
-            .collect::<TryJoinAll<JoinHandle<Result<_, _>>>>()
-            .await?
-            .into_iter()
-            .filter_map(|v: Result<(String, Vec<FaceDetection>), _>| {
-                if let Ok((label, detections)) = v {
-                    Some((label, detections))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        log::debug!(
-            "Pre-sorted embeddings size: {}",
-            &pre_sorted_embeddings.len()
-        );
-        // Compare the embeddings to the unsorted images in the facial thumbnails directory
-        let unsorted_embeddings = embeddings_collector_for_dir(
-            self.path_finder.get_facial_thumbnails_dir(),
-            detection_df,
-        )?;
-
-        // For each of the unsorted images, find the label it belongs to
-        let mut sorted_faces: HashMap<&str, Vec<String>> = HashMap::new();
-        unsorted_embeddings.into_iter().for_each(|unknown| {
-            for (label, known_detections) in &pre_sorted_embeddings {
-                let num_matches = known_detections
-                    .iter()
-                    .filter(|known| known.is_same_face(&unknown))
-                    .count();
-                if num_matches as f32 / known_detections.len() as f32 > 0.9 {
-                    sorted_faces
-                        .entry(label.as_str())
-                        .or_default()
-                        .push(unknown.face_id.as_ref().unwrap().clone());
-                }
-            }
-        });
-
-        log::debug!("Sorted images size: {}", &sorted_faces.len());
-        let sorted_thumbnail_dir = self.path_finder.get_sorted_facial_thumbnails_dir();
-        std::fs::create_dir_all(&sorted_thumbnail_dir)?;
-
-        // For each of the labels, create a directory and move the images into it
-        for (label, face_ids) in sorted_faces {
-            let label_dir = sorted_thumbnail_dir.join(label);
-            std::fs::create_dir_all(&label_dir)?;
-            face_ids.iter().for_each(|face_id| {
-                let thumbnail_img = format!("{}.jpg", face_id);
-                let src_image_path = self
-                    .path_finder
-                    .get_facial_thumbnails_dir()
-                    .join(&thumbnail_img);
-                let new_image_path = label_dir.join(&thumbnail_img);
-                if !new_image_path.exists() && src_image_path.exists() {
-                    log::debug!(
-                        "Moving image {} to {}",
-                        src_image_path.display(),
-                        new_image_path.display()
-                    );
-                    std::fs::rename(src_image_path, new_image_path).unwrap();
-                }
-            });
-        }
-
-        Ok(())
+        let label_maker = LabelMaker::new(&self.path_finder, presorted_thumbnail_dir, detection_df);
+        label_maker.sort_images_using_presorted_dir().await?;
+        log::debug!("Generating labels files");
+        label_maker.create_labels_file().await
     }
 }
 
@@ -610,7 +443,8 @@ impl DetectionDataFrameBuilder {
     }
 }
 
-fn get_dataframe<E: AsRef<[Expr]>>(root_path: &Path, exprs: E) -> Result<LazyFrame> {
+// Reads the parquet files in the given directory and returns a DataFrame
+pub(crate) fn get_dataframe<E: AsRef<[Expr]>>(root_path: &Path, exprs: E) -> Result<LazyFrame> {
     let parquet_glob = root_path.join("*.parquet");
     let lf = LazyFrame::scan_parquet(parquet_glob, Default::default())?;
     Ok(lf.select(exprs))
