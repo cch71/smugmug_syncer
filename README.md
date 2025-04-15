@@ -1,14 +1,41 @@
 # SmugMug Synchronizer
 
-This project is starting out as a tool to backup/mirror SmugMug accounts.
+This tool provides some basic functionality for manipulating SmugMug accounts.
+It can:
 
-As an offshoot I am hoping to add the ability in the future to take the meta
-data and image tags and feed that through AI to generate tags and have that
-saved back up into the SmugMug Account
+- Backup the contents of a SmugMug account. It does this by downloading the
+  metadata for Nodes, Albums, and Images. It will also download the unique
+  images and store them by their image key.
+  - Reproducing the albums via symlinks is possible however most cloud storage
+    systems do not support this and this approach reduces duplicate images.
+- Prints out the tree to enable matching the image id with the Album/Image name.
+- Removes upload keys for an account based on time period.
+- Generates stats about the SmugMug account.
+- Supports the ability to tag images via AI analysis.
+  - This is a multi step process that will be explained in the
+    [Image Labeling instructions](HOWTO_LABEL_IMAGES.md)
 
 ## Building
 
+It should build/run on MacOS, Linux, and Windows (via WSL)
+
+### Docker/Podman build instructions
+
+```console
+➜  git clone https://github.com/cch71/smugmug_syncer syncer
+
+➜  cd syncer
+
+➜  Docker build . -t smugmug-syncer
+   ...
+
+➜  target/release/smugmug-syncer --help
+```
+
+### Manual build instructions
+
 - Install rust tools: [How to install Rust](https://www.rust-lang.org/tools/install)
+- Install AI dependencies: dlib, nlohmann-json, and opencv
 - Clone the repo
 - cd cloned repo
 - run cargo build --release
@@ -16,19 +43,11 @@ saved back up into the SmugMug Account
 
 ```console
 ➜  git clone https://github.com/cch71/smugmug_syncer syncer
-Cloning into 'syncer'...
-remote: Enumerating objects: 43, done.
-remote: Counting objects: 100% (43/43), done.
-remote: Compressing objects: 100% (22/22), done.
-remote: Total 43 (delta 23), reused 40 (delta 20), pack-reused 0 (from 0)
-Receiving objects: 100% (43/43), 47.61 KiB | 650.00 KiB/s, done.
-Resolving deltas: 100% (23/23), done.
 
 ➜  cd syncer
 
 ➜  cargo build --release
    Compiling proc-macro2 v1.0.94
-   Compiling unicode-ident v1.0.18
    ...
 
 ➜  target/release/smugmug-syncer --help
@@ -46,7 +65,8 @@ smugmug-syncer --syncto ~/Pictures/SmugMugArchive sync --download-artifact-info 
 
 - Create a folder if it doesn't exist at ~/Pictures/SmugMugArchive
 - Use the account `apidemo` which equates to https://apidemo.smugmug.com
-- Download all Folder/Album and, with the --download-artifact-info, download the images for the given account.
+- Download all Folder/Album and, with the --download-artifact-info, download the
+  images for the given account.
   - this does not download the images/videos themselves just the metadata
 
 ### To download images/videos
@@ -68,7 +88,8 @@ smugmug-syncer --syncto ~/Pictures/Troop27SmugMugArchive query -p -c
 - `-p` causes the tree to be printed out
 - `-s` will cause statistics about metadata to be calculated
 
-Unless otherwise stated, the queries flags do not require the images/video artifacts to be downloaded.
+Unless otherwise stated, the queries flags do not require the images/video
+artifacts to be downloaded.
 
 ## CLI Usage
 

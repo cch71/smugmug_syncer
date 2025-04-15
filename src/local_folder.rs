@@ -143,7 +143,7 @@ impl LocalFolder {
         std::fs::create_dir_all(&artifacts_folder)?;
 
         log::debug!(
-            "Sycing artifacts to: {}",
+            "Syncing artifacts to: {}",
             artifacts_folder.to_string_lossy()
         );
         self.smugmug_folder

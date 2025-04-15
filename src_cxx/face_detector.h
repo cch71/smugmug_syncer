@@ -9,6 +9,7 @@
 #pragma once
 
 #include <vector>
+#include <memory>
 
 /*
 @brief Find face encodings in an image.

@@ -12,6 +12,7 @@
 
 #include <iostream>
 #include <vector>
+#include <memory>
 #include <string>
 #include <optional>
 #include <dlib/matrix.h>
