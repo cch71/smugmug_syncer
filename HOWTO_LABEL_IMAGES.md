@@ -11,10 +11,10 @@ Summary of the process:
 - This tool will then compare the rest of the unsorted images with the
   pre-sorted ones
   and sort the matches into folder names matching the pre-sorted ones.
-- An tag.json file will be created that will then be used by this tool to
-  update the images in SmugMug
+- An json file with label mappings will be created that will then be used by
+  this tool to update the images in SmugMug
 
-My Flow
+My Flow:
 
 ```mermaid
 flowchart TD
@@ -61,7 +61,7 @@ Example of my `.env` file
 ```console
 SMUGMUG_API_KEY=<API_KEY>
 SMUGMUG_API_SECRET=<API_SECRET>
-SMUGMUG_AUTH_CACHE= <PATH TO STORE CACHED AUTH CREDS>
+SMUGMUG_AUTH_CACHE=<PATH TO STORE CACHED AUTH CREDS>
 SMUGMUG_SYNC_LOCATION=<PATH TO SYNC SMUGMUG ACCOUNT TO (--syncto)>
 SMUGMUG_SYNC_MODELS_DIR=<PATH TO AI MODELS DIR>
 SMUGMUG_NICKNAME=<SMUGMUG ACCOUNT NICKNAME>
@@ -98,7 +98,7 @@ need to be re-analyzed and will be included in the label calculations.
 I created a `presorted` folder under the `facial_detections`
 directory and looked something like this:
 
-```
+```console
 ../facial_detections/
   /Billy/
     2sfas_1.jpg

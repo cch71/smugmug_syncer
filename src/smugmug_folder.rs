@@ -146,16 +146,17 @@ impl SmugMugFolder {
         album_node_file: P,
         image_map_file_opt: Option<P>,
     ) -> Result<Self> {
-        let get_data = |path| -> Result<Vec<u8>> {
+        fn get_data<P: AsRef<Path>>(path: &P) -> Result<Vec<u8>> {
+            log::trace!("Opening file: {}", path.as_ref().display());
             let file = File::open(path)?;
             let reader = BufReader::new(file);
             Ok(zstd::decode_all(reader)?)
-        };
+        }
 
-        let tree: DsTree = serde_json::from_slice(&get_data(album_node_file)?)?;
+        let tree: DsTree = serde_json::from_slice(&get_data(&album_node_file)?)?;
 
         let album_image_map: HashMap<String, Vec<Arc<Image>>> = match image_map_file_opt {
-            Some(image_map) => serde_json::from_slice(&get_data(image_map)?)?,
+            Some(image_map) => serde_json::from_slice(&get_data(&image_map)?)?,
             None => HashMap::new(),
         };
 

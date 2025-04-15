@@ -26,16 +26,26 @@ It should build/run on MacOS, Linux, and Windows (via WSL)
 
 ➜  cd syncer
 
-➜  Docker build . -t smugmug-syncer
+➜  docker build . -t smugmug-syncer
    ...
 
-➜  target/release/smugmug-syncer --help
+➜ docker run \
+  --env-file .env \
+  -v <SMUGMUG_SYNC_LOCATION>:<SMUGMUG_SYNC_LOCATION> \
+  -v <SMUGMUG_AUTH_CACHE>:<SMUGMUG_AUTH_CACHE> \
+  -v <SMUGMUG_SYNC_MODELS_DIR>:<SMUGMUG_SYNC_MODELS_DIR>:ro \
+  -it --rm \
+  smugmug-syncer query -p
 ```
 
-### Manual build instructions
+Replace the `-v` bracket entries `< >` with actual paths
+
+### Manual build instructions for MacOS/Linux/WSL(Ubuntu)
 
 - Install rust tools: [How to install Rust](https://www.rust-lang.org/tools/install)
 - Install AI dependencies: dlib, nlohmann-json, and opencv
+  - Recommend using `brew` to install on MacOS
+  - For Linux refer to the Dockerfile for exact deps on Ubuntu
 - Clone the repo
 - cd cloned repo
 - run cargo build --release
@@ -55,7 +65,8 @@ It should build/run on MacOS, Linux, and Windows (via WSL)
 
 ## Getting started
 
-_If building from source (Binary isn't provided yet) then you need to get an API key from SmugMug_
+Note: _If building from source (Binary isn't provided yet) then you need to get
+an API key from SmugMug_
 
 ### To synchronize metadata
 
@@ -64,10 +75,34 @@ smugmug-syncer --syncto ~/Pictures/SmugMugArchive sync --download-artifact-info 
 ```
 
 - Create a folder if it doesn't exist at ~/Pictures/SmugMugArchive
-- Use the account `apidemo` which equates to https://apidemo.smugmug.com
+- Use the account `apidemo` which equates to [https://apidemo.smugmug.com](https://apidemo.smugmug.com)
 - Download all Folder/Album and, with the --download-artifact-info, download the
   images for the given account.
   - this does not download the images/videos themselves just the metadata
+
+#### Equivalent with Docker/Podman
+
+create an .env file that looks like
+
+```file
+SMUGMUG_API_KEY=<API_KEY>
+SMUGMUG_API_SECRET=<API_SECRET>
+SMUGMUG_AUTH_CACHE=<PATH TO STORE CACHED AUTH CREDS>
+SMUGMUG_SYNC_LOCATION=<PATH TO SYNC SMUGMUG ACCOUNT TO (--syncto)>
+SMUGMUG_SYNC_MODELS_DIR=<PATH TO AI MODELS DIR>
+SMUGMUG_NICKNAME=<SMUGMUG ACCOUNT NICKNAME>
+SMUGMUG_SYNC_WORKERS=2
+```
+
+```console
+➜ docker run \
+  --env-file .env \
+  -v <SMUGMUG_SYNC_LOCATION>:<SMUGMUG_SYNC_LOCATION> \
+  -v <SMUGMUG_AUTH_CACHE>:<SMUGMUG_AUTH_CACHE> \
+  -v <SMUGMUG_SYNC_MODELS_DIR>:<SMUGMUG_SYNC_MODELS_DIR>:ro \
+  -it --rm \
+  smugmug-syncer query sync --download-artifact-info
+```
 
 ### To download images/videos
 
@@ -93,7 +128,7 @@ artifacts to be downloaded.
 
 ## CLI Usage
 
-General help:
+### General help
 
 ```console
 Usage: smugmug-syncer [OPTIONS] <COMMAND>
@@ -112,7 +147,7 @@ Options:
           Print help (see a summary with '-h')
 ```
 
-Sync help:
+### Sync help
 
 ```console
 Synchronizes the Folder/Album and optionally Image data from SmugMug.
@@ -128,7 +163,7 @@ Options:
   -h, --help                    Print help
 ```
 
-Query help
+### Query help
 
 ```console
 Performs analysis of synced data
@@ -142,6 +177,28 @@ Options:
           Show images for Album
   -s, --stats
           Calculates stats about the synced metadata
+  -h, --help
+          Print help
+```
+
+### Tag/Labeling Help
+
+For detaild Tag/Labeling support see: [Image Labeling instructions](HOWTO_LABEL_IMAGES.md)
+
+```console
+Usage: smugmug-syncer tags [OPTIONS]
+
+Options:
+      --gen-thumbnails-and-embeddings
+          Generates thumbnails and embeddings from the images
+      --gen-labels
+          Generates labels based on images found in the pre-sorted thumbnails directory
+  -d, --presorted-thumbnails-dir <PRESORTED_THUMBNAILS_DIR>
+          Directory where thumbnails have been manually sorted. REQUIRED if --gen-labels is set
+      --update-smugmug-tags
+          Update smugmug image tags
+  -n, --nickname <NICKNAME>
+          Nickname of user for account to sync with. (Defaults to API user)
   -h, --help
           Print help
 ```
@@ -170,8 +227,9 @@ _A .env file can be created in the working directory that contains these as well
 
 ## License
 
-Licensed under either of <a href="LICENSE-APACHE">Apache License Version
-2.0</a> or <a href="LICENSE-MIT">MIT license</a> at your option.
+Licensed under either of
+<a href="LICENSE-APACHE">Apache License Version 2.0</a> or <a href="LICENSE-MIT">MIT license</a>
+at your option.
 
 ## Contributions
 

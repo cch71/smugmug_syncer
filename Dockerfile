@@ -64,4 +64,4 @@ WORKDIR /app
 COPY --from=builder /app/target/release/smugmug-syncer .
 
 # Set the default command to run the application
-CMD ["./smugmug-syncer"]
+ENTRYPOINT ["./smugmug-syncer"]
