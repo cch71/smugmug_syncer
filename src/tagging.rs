@@ -11,15 +11,16 @@ use anyhow::Result;
 
 // Handles the tagging cli request
 pub(crate) async fn handle_tagging_req(path: &str, args: TaggingArgs) -> Result<()> {
-    log::trace!("Tagging args {:#?}", args);
+    log::debug!("Tagging args {:#?}", args);
     if args.update_smugmug_tags {
-        return handle_updating_tags_req(&args.smugmug_path).await;
+        return handle_updating_tags_req(path, &args.smugmug_path).await;
     }
 
     let local_folder = local_folder::LocalFolder::get(path)?;
 
     if args.gen_thumbnails_and_embeddings {
         local_folder.generate_thumbnails_and_embeddings().await?;
+        println!("Generation of thumbnails and embeddings complete.");
     }
 
     if args.gen_labels {
@@ -33,6 +34,7 @@ pub(crate) async fn handle_tagging_req(path: &str, args: TaggingArgs) -> Result<
                 local_folder
                     .generate_labels_from_presorted_dir(presorted_thumbnails_dir)
                     .await?;
+                println!("Generation of labels and sorting of thumbnails complete.");
             }
         }
     }

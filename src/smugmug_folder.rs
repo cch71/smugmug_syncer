@@ -17,9 +17,14 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use chrono::Utc;
-use futures::{StreamExt, future::TryJoinAll, pin_mut};
+use futures::{
+    StreamExt,
+    future::{TryJoinAll, try_join_all},
+    pin_mut,
+};
 use image::ImageReader;
 use serde::Serialize;
+use serde_json::json;
 use smugmug::v2::{
     Album, Client, Image, Node, NodeType, NodeTypeFilters, SortDirection, SortMethod,
 };
@@ -147,7 +152,6 @@ impl SmugMugFolder {
             Ok(zstd::decode_all(reader)?)
         };
 
-        // let tree: DsTree = flexbuffers::from_slice(&reader)?;
         let tree: DsTree = serde_json::from_slice(&get_data(album_node_file)?)?;
 
         let album_image_map: HashMap<String, Vec<Arc<Image>>> = match image_map_file_opt {
@@ -254,7 +258,6 @@ impl SmugMugFolder {
         image_map_path: P,
     ) -> Result<()> {
         let write_data = |contents: Vec<u8>, path| -> Result<()> {
-            //let contents = flexbuffers::to_vec(&self.tree)?;
             let contents = zstd::encode_all(contents.as_slice(), 22)?;
             Ok(std::fs::write(path, contents)?)
         };
@@ -272,7 +275,7 @@ impl SmugMugFolder {
         !self.album_image_map.is_empty()
     }
 
-    /// Verifes artifacts are not corrupted
+    /// Verifies artifacts are not corrupted
     pub async fn artifacts_verifier<P: AsRef<Path>>(&self, path: P) -> Result<Vec<String>> {
         if !self.are_images_populated() {
             return Err(anyhow!("artifacts metadata must be populated"));
@@ -557,6 +560,66 @@ impl SmugMugFolder {
             album.clear_upload_key_with_client(client.clone()).await?;
         }
         Ok(num_albums_to_remove)
+    }
+
+    /// Updates the image labels from the given JSON tag
+    pub async fn update_labels_from_json_tag(
+        &self,
+        client: Client,
+        labels_to_imgs_map: HashMap<String, Vec<String>>,
+    ) -> Result<bool> {
+        let updated_smugmug_image = async move |label: String, image: Arc<Image>| -> Result<bool> {
+            // to update we need the image id that is on the end of the image uri
+            let image_real_id = image
+                .uri
+                .split('/')
+                .next_back()
+                .ok_or_else(|| anyhow!("Failed to get image id from uri"))?;
+            // log::info!("Getting image: {}", image_id);
+            // let image = Image::from_id(client.clone(), &image_id).await?;
+
+            let mut new_keywords: HashSet<&String> = image.keywords.iter().collect();
+            if new_keywords.contains(&label) {
+                log::info!("Image: {} already has label: {}", image_real_id, label);
+                return Ok(false);
+            }
+            new_keywords.insert(&label);
+            let data = serde_json::to_vec(&json!({"KeywordArray": new_keywords}))?;
+            let req_limiter = self.client_req_limiter.acquire().await.unwrap();
+            let _ =
+                Image::update_image_data_with_client_from_id(client.clone(), data, image_real_id)
+                    .await?;
+            drop(req_limiter);
+            log::info!("Updated image: {} with label: {}", image_real_id, label);
+            Ok(true)
+        };
+
+        // Create an image id->Image map
+        let img_map: HashMap<String, Arc<Image>> = self
+            .album_image_map
+            .values()
+            .fold(HashSet::new(), |mut acc, v| {
+                acc.extend(v.iter().map(Arc::clone));
+                acc
+            })
+            .into_iter()
+            .map(|v| (v.image_key.clone(), v))
+            .collect();
+
+        let mut workers = Vec::new();
+        for (label, images) in labels_to_imgs_map.into_iter() {
+            for image_id in images.into_iter() {
+                if let Some(image) = img_map.get(&image_id) {
+                    let label = label.clone();
+                    let image = Arc::clone(image);
+                    let jh = updated_smugmug_image(label, image);
+                    workers.push(jh);
+                }
+            }
+        }
+        let was_updated = try_join_all(workers).await?.iter().all(|v| *v);
+
+        Ok(was_updated)
     }
 }
 

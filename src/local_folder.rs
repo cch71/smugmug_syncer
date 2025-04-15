@@ -7,6 +7,7 @@
  */
 
 use std::{
+    collections::HashMap,
     fs::File,
     path::{Path, PathBuf},
 };
@@ -367,6 +368,17 @@ impl LocalFolder {
         label_maker.sort_images_using_presorted_dir().await?;
         log::debug!("Generating labels files");
         label_maker.create_labels_file().await
+    }
+
+    /// Updates the labels based on the facial tags json file
+    pub async fn update_smugmug_images_with_facial_tags(&self) -> Result<bool> {
+        let labels_file = self.path_finder.get_facial_tags_file();
+        let file = File::open(&labels_file)?;
+        let labels_to_imgs_map: HashMap<String, Vec<String>> = serde_json::from_reader(file)?;
+        let client = self.client.clone().expect("Client wasn't found");
+        self.smugmug_folder
+            .update_labels_from_json_tag(client, labels_to_imgs_map)
+            .await
     }
 }
 

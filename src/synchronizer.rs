@@ -92,6 +92,7 @@ pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Re
     Ok(())
 }
 
+/// This will remove the upload keys from albums that are older than the specified number of days
 pub(crate) async fn handle_clear_key_req(path: &str, args: ClearUploadKeysArgs) -> Result<()> {
     log::trace!("Clearing upload keys {:#?}", args);
     let client = get_smugmug_client().await;
@@ -109,6 +110,24 @@ pub(crate) async fn handle_clear_key_req(path: &str, args: ClearUploadKeysArgs) 
     Ok(())
 }
 
-pub(crate) async fn handle_updating_tags_req(_smugmug_path: &SmugMugPathArgs) -> Result<()> {
-    todo!()
+/// This will update the tags to include the labels from the facial detection
+pub(crate) async fn handle_updating_tags_req(
+    path: &str,
+    smugmug_path: &SmugMugPathArgs,
+) -> Result<()> {
+    // technically the path and node are not needed ATM
+    let client = get_smugmug_client().await;
+    let node = get_node(client.clone(), smugmug_path).await?;
+
+    let local_folder = LocalFolder::get_or_create(path, client.clone(), node, false, false).await?;
+    let was_updated = local_folder
+        .update_smugmug_images_with_facial_tags()
+        .await?;
+    println!("Finished updating SmugMug images with the facial tags");
+    if was_updated {
+        println!(
+            "The image metadata has changed in SmugMug. Rerun the sync command to update the local folder"
+        );
+    }
+    Ok(())
 }
