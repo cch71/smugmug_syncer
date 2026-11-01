@@ -1,7 +1,10 @@
 fn main() {
     let dlib = pkg_config::probe_library("dlib-1").unwrap();
     let nl_json = pkg_config::probe_library("nlohmann_json").unwrap();
-    let cv = pkg_config::probe_library("opencv4").unwrap();
+    // Prefer OpenCV 5, but fall back to OpenCV 4 (e.g. Debian/Ubuntu packages used in the Dockerfile)
+    let cv = pkg_config::probe_library("opencv5")
+        .or_else(|_| pkg_config::probe_library("opencv4"))
+        .unwrap();
 
     cxx_build::bridge("src/face_detector.rs")
         .file("src_cxx/face_detector.cc")

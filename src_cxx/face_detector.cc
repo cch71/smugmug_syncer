@@ -17,15 +17,51 @@
 #include <optional>
 #include <dlib/matrix.h>
 #include <dlib/dnn.h>
-#include <dlib/opencv/cv_image.h>
 #include <dlib/image_transforms.h>
-#include <dlib/opencv.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <filesystem>
 #include <format>
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
+
+////////////////////////////////////////////////////
+// OpenCV <-> dlib conversions.
+// dlib's <dlib/opencv.h> bridge depends on the legacy OpenCV C API
+// (opencv2/core/types_c.h), which was removed in OpenCV 5, so we do the
+// conversions ourselves.
+
+// Copies an 8-bit, 3-channel RGB cv::Mat into a dlib RGB matrix.
+dlib::matrix<dlib::rgb_pixel> mat_to_dlib(const cv::Mat &rgb)
+{
+    CV_Assert(rgb.type() == CV_8UC3);
+    dlib::matrix<dlib::rgb_pixel> out(rgb.rows, rgb.cols);
+    for (int r = 0; r < rgb.rows; ++r)
+    {
+        const auto *row = rgb.ptr<cv::Vec3b>(r);
+        for (int c = 0; c < rgb.cols; ++c)
+        {
+            out(r, c) = dlib::rgb_pixel(row[c][0], row[c][1], row[c][2]);
+        }
+    }
+    return out;
+}
+
+// Copies a dlib RGB matrix into a new 8-bit, 3-channel RGB cv::Mat.
+cv::Mat dlib_to_mat(const dlib::matrix<dlib::rgb_pixel> &img)
+{
+    cv::Mat out(static_cast<int>(img.nr()), static_cast<int>(img.nc()), CV_8UC3);
+    for (long r = 0; r < img.nr(); ++r)
+    {
+        auto *row = out.ptr<cv::Vec3b>(static_cast<int>(r));
+        for (long c = 0; c < img.nc(); ++c)
+        {
+            const auto &p = img(r, c);
+            row[c] = cv::Vec3b(p.red, p.green, p.blue);
+        }
+    }
+    return out;
+}
 
 
 
@@ -174,10 +210,7 @@ std::optional<dlib::matrix<dlib::rgb_pixel>> read_image(const std::string &filen
     cv::cvtColor(image, rgb, cv::COLOR_BGR2RGB);
 
     // Convert to dlib image
-    dlib::cv_image<dlib::rgb_pixel> dlib_image(rgb);
-    dlib::matrix<dlib::rgb_pixel> dlib_matrix;
-    dlib::assign_image(dlib_matrix, dlib_image);
-    return dlib_matrix;
+    return mat_to_dlib(rgb);
 }
 
 ////////////////////////////////////////////////////
@@ -232,7 +265,7 @@ std::unique_ptr<std::vector<uint8_t>> find_face_encodings_in_image(std::string c
                 bool did_save = false;
                 try
                 {
-                    cv::Mat thumbnail_rgb = dlib::toMat(thumbnail);
+                    cv::Mat thumbnail_rgb = dlib_to_mat(thumbnail);
 
                     cv::Mat thumbnail_bgr;
                     cv::cvtColor(thumbnail_rgb, thumbnail_bgr, cv::COLOR_RGB2BGR);

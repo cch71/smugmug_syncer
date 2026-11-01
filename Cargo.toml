@@ -29,7 +29,7 @@ tree-ds = { version = "0.1", features = [
 ] }
 log = "0.4"
 env_logger = "0.11"
-zstd = "0.13"
+zstd = "0.14"
 clap = { version = "4", features = ["derive"] }
 clap_derive = "4"
 humansize = "2"
