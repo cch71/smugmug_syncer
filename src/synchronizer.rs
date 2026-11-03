@@ -67,13 +67,17 @@ pub(crate) async fn handle_synchronization_req(path: &str, args: SyncArgs) -> Re
         path,
         client.clone(),
         node,
-        args.download_artifact_info || args.download_artifacts,
+        args.download_artifact_info || args.download_artifacts || args.download_image_metadata,
         args.force,
     )
     .await?;
 
     if args.download_artifacts {
         local_folder.sync_artifacts().await?;
+    }
+
+    if args.download_image_metadata {
+        local_folder.sync_image_metadata().await?;
     }
 
     // let end_limit = client

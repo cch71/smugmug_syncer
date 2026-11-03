@@ -8,11 +8,8 @@ name = "smugmug-syncer"
 path = "src/main.rs"
 
 [dependencies]
-const_format = "0.2"
-smugmug = "0.7"
+smugmug = "0.10"
 url = "2"
-reqwest = "0.12"
-reqwest-oauth1 = "0.3"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
@@ -20,8 +17,8 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 dotenvy = "0.15"
-md5 = "0.7"
-tree-ds = { version = "0.1", features = [
+md5 = "0.8.1"
+tree-ds = { version = "0.2", features = [
     "serde",
     "async",
     "compact_serde",
@@ -36,7 +33,7 @@ humansize = "2"
 image = "0.25"
 cxx = "1"
 ciborium = { version = "0.2" }
-polars = { version = "0.46", features = [
+polars = { version = "0.55.2", features = [
     "parquet",
     "json",
     "lazy",

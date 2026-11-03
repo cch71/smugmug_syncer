@@ -5,3 +5,4 @@ shape_predictor_68_face_landmarks.dat
 mmod_human_face_detector.dat
 .idea/
 .DS_Store
+.recovered

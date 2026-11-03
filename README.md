@@ -114,6 +114,19 @@ This will download the images video into an `artifacts` folder at the given loca
 The images/videos will be named by their SmugMug image key. _Future versions of this
 utility may create a symlink representation of the Album/Image/Folder relationship._
 
+For videos SmugMug's archived file is only a still frame, so the largest video SmugMug has is
+also downloaded as `artifacts/<image key>.<ext>` (e.g. `.mp4`).
+
+### To download image metadata (EXIF/IPTC)
+
+```console
+smugmug-syncer --syncto ~/Pictures/SmugMugArchive sync --download-image-metadata --nickname apidemo
+```
+
+This saves the metadata SmugMug holds for each image/video (camera, date taken, exposure,
+location, ...) as parquet files in `.smugmug_db/image_metadata`. SmugMug keeps this even when
+the file it serves for download has had its EXIF removed.
+
 ### Print out tree representation of the metadata
 
 ```console
@@ -156,11 +169,12 @@ Synchronizes the Folder/Album and optionally Image data from SmugMug.
 Usage: smugmug-syncer sync [OPTIONS]
 
 Options:
-      --download-artifact-info  Will synchronize the Image/Video meta information (Not the image/videos themselves)
-      --download-artifacts      Will download Image/Videos not already downloaded. Implies --download-artifact-info
-  -n, --nickname <NICKNAME>     Nickname of user for account to sync with. (Defaults to API user)
-      --force                   Forces resync of data
-  -h, --help                    Print help
+      --download-artifact-info   Will synchronize the Image/Video meta information (Not the image/videos themselves)
+      --download-artifacts       Will download Image/Videos not already downloaded. Implies --download-artifact-info
+      --download-image-metadata  Will download the EXIF/IPTC metadata SmugMug holds for each Image/Video (camera, date taken, location, ...) not already downloaded. Implies --download-artifact-info
+  -n, --nickname <NICKNAME>      Nickname of user for account to sync with. (Defaults to API user)
+      --force                    Forces resync of data
+  -h, --help                     Print help
 ```
 
 ### Query help

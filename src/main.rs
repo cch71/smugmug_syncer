@@ -6,11 +6,16 @@
  *  at your option.
  */
 mod face_detector;
+mod file_io;
 mod label_maker;
 mod local_folder;
+mod parquet_store;
 mod path_finder;
 mod querier;
+mod retry;
 mod smugmug_folder;
+mod smugmug_image_metadata;
+mod smugmug_video;
 mod synchronizer;
 mod tagging;
 mod tokens;
@@ -92,6 +97,11 @@ pub(crate) struct SyncArgs {
     /// Will download Image/Videos not already downloaded. Implies --download-artifact-info
     #[arg(long)]
     pub(crate) download_artifacts: bool,
+
+    /// Will download the EXIF/IPTC metadata SmugMug holds for each Image/Video (camera, date
+    /// taken, location, ...) not already downloaded. Implies --download-artifact-info
+    #[arg(long)]
+    pub(crate) download_image_metadata: bool,
 
     #[command(flatten)]
     pub(crate) smugmug_path: SmugMugPathArgs,

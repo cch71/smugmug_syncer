@@ -19,12 +19,12 @@ use serde::{Deserialize, Serialize};
 use smugmug::v2::{Client, Node};
 use std::io::BufReader;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use crate::{
     PathFinder,
     face_detector::{FaceDetection, find_faces},
     label_maker::LabelMaker,
+    parquet_store::{get_dataframe, save_dataframe},
     smugmug_folder::{SmugMugFolder, SmugMugFolderStats},
 };
 
@@ -73,6 +73,11 @@ impl LocalFolder {
             ..Default::default()
         };
 
+        // Read the saved props before anything is downloaded or rewritten, so a props file that
+        // can't be parsed stops the sync without changing any data
+        let props_path = path_finder.get_props_file();
+        let mut new_props = Self::read_props_file(&props_path)?.unwrap_or_default();
+
         let mut smugmug_folder =
             if force_update_if_exists || !path_finder.does_album_and_node_data_file_exists()? {
                 log::debug!("downloading album and node data");
@@ -111,8 +116,6 @@ impl LocalFolder {
             )?;
 
             log::debug!("Writing out props");
-            let props_path = path_finder.get_props_file();
-            let mut new_props = Self::read_props_file(&props_path).unwrap_or_default();
             if props.album_node_last_sync_ts.is_some() {
                 new_props.album_node_last_sync_ts = props.album_node_last_sync_ts
             }
@@ -147,20 +150,39 @@ impl LocalFolder {
             artifacts_folder.to_string_lossy()
         );
         self.smugmug_folder
-            .sync_artifacts(&artifacts_folder, client.clone())
+            .sync_artifacts(
+                &artifacts_folder,
+                &self.path_finder.get_video_info_dir(),
+                client.clone(),
+            )
             .await?;
 
         Ok(())
     }
 
-    /// Read props file
+    /// Syncs the EXIF/IPTC metadata SmugMug holds for each Image/Video
     ///
     ///
-    fn read_props_file(path: &PathBuf) -> Option<Props> {
-        File::open(path).ok().and_then(|f| {
-            let rdr = BufReader::new(f);
-            serde_json::from_reader(rdr).ok()
-        })
+    pub async fn sync_image_metadata(&self) -> Result<()> {
+        let client = self
+            .client
+            .clone()
+            .expect("Client wasn't found for sync image metadata operation");
+
+        self.smugmug_folder
+            .sync_image_metadata(self.path_finder.get_image_metadata_dir(), client)
+            .await
+    }
+
+    /// Read props file.  Returns None if it doesn't exist yet and an error if it can't be parsed,
+    /// so a bad file is never overwritten with defaults.
+    ///
+    fn read_props_file(path: &PathBuf) -> Result<Option<Props>> {
+        match File::open(path) {
+            Ok(f) => Ok(Some(serde_json::from_reader(BufReader::new(f))?)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Write props file
@@ -184,7 +206,7 @@ impl LocalFolder {
     pub async fn check_for_invalid_artifacts(&self) -> Result<Vec<String>> {
         let artifacts_folder = self.path_finder.get_artifacts_folder();
         self.smugmug_folder
-            .artifacts_verifier(artifacts_folder)
+            .artifacts_verifier(artifacts_folder, self.path_finder.get_video_info_dir())
             .await
     }
 
@@ -257,7 +279,7 @@ impl LocalFolder {
                 .collect()?
                 .column("image_id")?
                 .str()?
-                .into_iter()
+                .iter()
                 .filter_map(|v| v.map(|s| s.to_string()))
                 .collect();
         log::debug!(
@@ -291,31 +313,8 @@ impl LocalFolder {
             path: &Path,
         ) -> Result<()> {
             let mut df = builder.build()?;
-
-            let file_id = Uuid::new_v4().simple().to_string();
-            let file_path = path.join(format!("embeddings_{}.parquet", file_id));
-
-            log::debug!(
-                "Doing checkpoint save for: {} at: {}",
-                &df,
-                file_path.display()
-            );
-
-            let file = File::create(file_path)?;
-            ParquetWriter::new(file)
-                .with_compression(ParquetCompression::Zstd(None))
-                .finish(&mut df)?;
-
+            save_dataframe(&mut df, path, "embeddings")?;
             Ok(())
-        }
-
-        // Create facial embeddings directory if it doesn't exist
-        match std::fs::create_dir_all(&facial_embeddings_dir) {
-            Ok(_) => {}
-            Err(ref error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(error.into()); // Return the error
-            }
         }
 
         // wait for the workers to send facial detections and finish
@@ -383,9 +382,14 @@ impl LocalFolder {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 struct Props {
     album_node_last_sync_ts: Option<DateTime<Utc>>,
     image_map_last_sync_ts: Option<DateTime<Utc>>,
+
+    // Keys this version doesn't know about, kept so rewriting the file doesn't drop them
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Props {
@@ -453,11 +457,4 @@ impl DetectionDataFrameBuilder {
         ]?;
         Ok(df)
     }
-}
-
-// Reads the parquet files in the given directory and returns a DataFrame
-pub(crate) fn get_dataframe<E: AsRef<[Expr]>>(root_path: &Path, exprs: E) -> Result<LazyFrame> {
-    let parquet_glob = root_path.join("*.parquet");
-    let lf = LazyFrame::scan_parquet(parquet_glob, Default::default())?;
-    Ok(lf.select(exprs))
 }

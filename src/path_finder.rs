@@ -20,6 +20,8 @@ impl PathFinder {
     const NODE_AND_ALBUM_DATA_FILE: &str = "node_and_album_tree.db";
     const ALBUM_IMAGE_MAP_FILE: &str = "album_image_map.db";
     const PROPS_FILE: &str = "props.json";
+    const VIDEO_INFO_DIR: &str = "video_info";
+    const IMAGE_METADATA_DIR: &str = "image_metadata";
     const ARTIFACTS_FOLDER: &str = "artifacts";
     const FACIAL_DETECTION_DIR: &str = "facial_detections";
     const FACIAL_THUMBNAILS_DIR: &str = "thumbnails";
@@ -46,6 +48,20 @@ impl PathFinder {
     pub(crate) fn get_props_file(&self) -> PathBuf {
         let mut path = self.get_meta_db_path();
         path.push(PathFinder::PROPS_FILE);
+        path
+    }
+
+    /// Directory of parquet files describing the downloaded video for each video artifact
+    pub(crate) fn get_video_info_dir(&self) -> PathBuf {
+        let mut path = self.get_meta_db_path();
+        path.push(PathFinder::VIDEO_INFO_DIR);
+        path
+    }
+
+    /// Directory of parquet files holding the EXIF/IPTC metadata SmugMug has for each artifact
+    pub(crate) fn get_image_metadata_dir(&self) -> PathBuf {
+        let mut path = self.get_meta_db_path();
+        path.push(PathFinder::IMAGE_METADATA_DIR);
         path
     }
 

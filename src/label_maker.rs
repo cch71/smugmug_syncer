@@ -225,7 +225,7 @@ fn extract_detections_for_face_ids(
     let filter_series = Series::new("face_id_filter".into(), face_id_filter_values);
 
     let filtered = df
-        .filter(col("face_id").is_in(lit(filter_series)))
+        .filter(col("face_id").is_in(lit(filter_series).implode(false), false))
         .collect()?;
 
     let face_ids = filtered.column("face_id")?.str()?;
@@ -287,4 +287,34 @@ fn embeddings_collector_for_dir(
     );
 
     Ok(found_detections)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_only_the_requested_face_ids() {
+        let embeddings: Vec<Series> = vec![
+            Series::new("".into(), [0.1f64, 0.2]),
+            Series::new("".into(), [0.3f64, 0.4]),
+            Series::new("".into(), [0.5f64, 0.6]),
+        ];
+        let df = df![
+            "image_id" => ["img1", "img1", "img2"],
+            "face_id" => ["img1_0", "img1_1", "img2_0"],
+            "embeddings" => embeddings,
+        ]
+        .unwrap()
+        .lazy();
+
+        let face_ids = HashSet::from(["img1_1".to_string(), "img2_0".to_string()]);
+        let mut found = extract_detections_for_face_ids(face_ids, df).unwrap();
+        found.sort_by(|a, b| a.face_id.cmp(&b.face_id));
+
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].face_id.as_deref(), Some("img1_1"));
+        assert_eq!(found[0].embeddings, Some(vec![0.3, 0.4]));
+        assert_eq!(found[1].image_id, "img2");
+    }
 }

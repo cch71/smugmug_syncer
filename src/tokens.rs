@@ -6,52 +6,19 @@
  *  at your option.
  */
 
-use const_format::concatcp;
-use reqwest_oauth1::{OAuthClientProvider, TokenReaderFuture};
-use serde::{Deserialize, Serialize};
+use smugmug::v2::{OAuth1Token, oauth1_access_token, oauth1_authorize_url, oauth1_request_token};
 use std::fs::File;
 use std::io::{self, BufReader};
-use url::Url;
-
-#[derive(Deserialize, Serialize, Debug)]
-struct SmugMugOauth1Token {
-    token: String,
-    secret: String,
-}
 
 // Retrieve smugmug tokens from the Oauth1 service
 async fn get_smugmug_tokens_from_service(
     consumer_key: &str,
     consumer_secret: &str,
-) -> anyhow::Result<SmugMugOauth1Token> {
-    const OAUTH_ORIGIN: &str = "https://secure.smugmug.com";
-    const REQUEST_TOKEN_URL: &str =
-        concatcp!(OAUTH_ORIGIN, "/services/oauth/1.0a/getRequestToken/");
-    const ACCESS_TOKEN_URL: &str = concatcp!(OAUTH_ORIGIN, "/services/oauth/1.0a/getAccessToken/");
-    const AUTHORIZE_URL: &str = concatcp!(OAUTH_ORIGIN, "/services/oauth/1.0a/authorize/");
-
+) -> anyhow::Result<OAuth1Token> {
     // step 1: acquire request token & token secret
-    let secrets = reqwest_oauth1::Secrets::new(consumer_key, consumer_secret);
+    let request_token = oauth1_request_token(consumer_key, consumer_secret, "oob").await?;
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .oauth1(secrets)
-        .post(REQUEST_TOKEN_URL)
-        .query(&[("oauth_callback", "oob")])
-        .send()
-        .parse_oauth_token()
-        .await?;
-
-    let rt = resp.oauth_token;
-    let rts = resp.oauth_token_secret;
-    let auth_url = Url::parse_with_params(
-        AUTHORIZE_URL,
-        &[
-            ("oauth_token", rt.as_str()),
-            ("access", "Full"),
-            ("permissions", "Modify"),
-        ],
-    )?;
+    let auth_url = oauth1_authorize_url(&request_token, "Full", "Modify")?;
     println!("please access: {}", auth_url.as_str());
 
     // step 2. acquire user pin
@@ -61,29 +28,18 @@ async fn get_smugmug_tokens_from_service(
     let pin = user_input.trim();
 
     // step 3. acquire access token
-    let secrets = reqwest_oauth1::Secrets::new(consumer_key, consumer_secret).token(rt, rts);
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .oauth1(secrets)
-        .get(ACCESS_TOKEN_URL)
-        .query(&[("oauth_verifier", pin)])
-        .send()
-        .parse_oauth_token()
-        .await?;
+    let access_token =
+        oauth1_access_token(consumer_key, consumer_secret, &request_token, pin).await?;
     println!(
         "your token and secret is: \n token: {}\n secret: {}",
-        resp.oauth_token, resp.oauth_token_secret
+        access_token.token, access_token.secret
     );
 
-    Ok(SmugMugOauth1Token {
-        token: resp.oauth_token,
-        secret: resp.oauth_token_secret,
-    })
+    Ok(access_token)
 }
 
 // Retrieve oauth tokens from file
-fn get_smugmug_tokens_from_file(file: File) -> anyhow::Result<SmugMugOauth1Token> {
+fn get_smugmug_tokens_from_file(file: File) -> anyhow::Result<OAuth1Token> {
     let reader = BufReader::new(file);
     Ok(serde_json::from_reader(reader)?)
 }

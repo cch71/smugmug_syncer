@@ -9,10 +9,9 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    io::{BufReader, Cursor},
+    io::BufReader,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use anyhow::{Result, anyhow};
@@ -26,10 +25,19 @@ use image::ImageReader;
 use serde::Serialize;
 use serde_json::json;
 use smugmug::v2::{
-    Album, Client, Image, Node, NodeType, NodeTypeFilters, SortDirection, SortMethod,
+    Album, Client, Image, ImageMetadata, Node, NodeType, NodeTypeFilters, SortDirection, SortMethod,
 };
+use tokio::sync::mpsc;
 
 use tree_ds::prelude as TreeDs;
+
+use crate::{
+    file_io::{bytes_md5, file_md5, remove_partial_files, write_file_atomically},
+    parquet_store::save_in_batches,
+    retry::with_retries,
+    smugmug_image_metadata::ImageMetadataRecord,
+    smugmug_video::VideoInfo,
+};
 
 type DsTree = TreeDs::Tree<Arc<Node>, Arc<Album>>;
 type DsNode = TreeDs::Node<Arc<Node>, Arc<Album>>;
@@ -118,7 +126,7 @@ impl SmugMugFolder {
             .tree
             .get_nodes()
             .iter()
-            .flat_map(|ds_node| ds_node.get_value())
+            .filter_map(|ds_node| ds_node.get_value().ok().flatten())
             .collect();
 
         // Parallel way of doing it but harder on SmugMug API and debugging so disabling for now
@@ -174,9 +182,11 @@ impl SmugMugFolder {
         let mut album_to_node_map: HashMap<String, DsNode> = tree
             .get_nodes()
             .iter()
-            .filter(|ds_node| matches!(ds_node.get_node_id().node_type, NodeType::Album))
-            .map(|ds_node| {
-                let node = ds_node.get_node_id();
+            .map(|ds_node| Ok((ds_node.get_node_id()?, ds_node)))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|(node, _)| matches!(node.node_type, NodeType::Album))
+            .map(|(node, ds_node)| {
                 let album_id = node.album_id().unwrap();
                 (album_id, ds_node.clone())
             })
@@ -196,10 +206,10 @@ impl SmugMugFolder {
             .await?;
 
             // Associate the albums with the nodes
-            albums.into_iter().for_each(|album| {
+            for album in albums {
                 let ds_node = album_to_node_map.remove(&album.album_key).unwrap();
-                ds_node.set_value(Some(Arc::new(album)));
-            });
+                ds_node.set_value(Some(Arc::new(album)))?;
+            }
         }
 
         Ok(())
@@ -209,7 +219,7 @@ impl SmugMugFolder {
     async fn build_node_tree(tree: &mut DsTree, ds_parent_node: DsNode) -> Result<()> {
         // function to get child nodes
         let mut get_children = async |ds_parent_node: DsNode| -> Result<Vec<DsNode>> {
-            let node = ds_parent_node.get_node_id();
+            let node = ds_parent_node.get_node_id()?;
 
             // Retrieve the Albums under the root node
             let child_nodes = node.children(
@@ -232,7 +242,7 @@ impl SmugMugFolder {
                 let ds_node = DsNode::new(child_node.clone(), None);
 
                 // Associate ds_tree child node with parent
-                tree.add_node(ds_node.clone(), Some(&ds_parent_node.get_node_id()))?;
+                tree.add_node(ds_node.clone(), Some(&node))?;
 
                 if child_node.has_children {
                     to_further_process.push(ds_node);
@@ -277,68 +287,63 @@ impl SmugMugFolder {
     }
 
     /// Verifies artifacts are not corrupted
-    pub async fn artifacts_verifier<P: AsRef<Path>>(&self, path: P) -> Result<Vec<String>> {
+    pub async fn artifacts_verifier<P: AsRef<Path>>(
+        &self,
+        path: P,
+        video_info_dir: P,
+    ) -> Result<Vec<String>> {
         if !self.are_images_populated() {
             return Err(anyhow!("artifacts metadata must be populated"));
         }
 
-        let verifier = async |mut path: PathBuf, image: Arc<Image>| -> Result<Option<String>> {
+        let video_infos = Arc::new(VideoInfo::load_all(video_info_dir.as_ref())?);
+
+        let verifier = async |mut path: PathBuf,
+                              image: Arc<Image>,
+                              video_infos: Arc<HashMap<String, VideoInfo>>|
+               -> Result<Option<String>> {
+            let artifacts_dir = path.clone();
             path.push(&image.image_key);
+
+            // SmugMug serves a "PROCESSING" placeholder instead of the original while this is set
+            if image.is_processing {
+                return Ok(Some(format!(
+                    "Artifact {}: SmugMug reports image still processing (uploaded {}), original not available",
+                    image, image.date_created
+                )));
+            }
 
             if !std::fs::exists(&path).unwrap_or_default() {
                 return Ok(Some(format!("Artifact {}: not found", image)));
             }
 
-            let data = std::fs::read(&path)?;
-            if data.is_empty() {
+            if std::fs::metadata(&path)?.len() == 0 {
                 return Ok(Some(format!("Artifact {}: is empty", image)));
             }
 
-            let metadata_report = if let Some(md5sum) = image.archived_md5.as_ref() {
-                let digest = format!("{:x}", md5::compute(&data));
-                if &digest != md5sum {
-                    format!(
-                        "Metadata doesn't match.  md5: {}:{}, size {},{}",
-                        md5sum,
-                        digest,
-                        image
-                            .archived_size
-                            .map(|v| v.to_string())
-                            .unwrap_or("?".to_string()),
-                        data.len()
-                    )
-                } else {
-                    String::new()
+            let mut reports = check_image_file(&path, &image)?;
+
+            // For videos the artifact above is only the poster frame so check the video itself too
+            if image.is_video {
+                match video_infos.get(&image.image_key) {
+                    None => reports.push("Video not downloaded".to_string()),
+                    Some(info) => {
+                        match check_video_file(
+                            &info.video_path(&artifacts_dir, &image.image_key),
+                            info,
+                        ) {
+                            Err(err) => reports.push(format!("Video not readable: {:?}", err)),
+                            Ok(Some(problem)) => reports.push(problem),
+                            Ok(None) => {}
+                        }
+                    }
                 }
-            } else {
-                format!(
-                    "Metadata doesn't match.  md5: missing, size {},{}",
-                    image
-                        .archived_size
-                        .map(|v| v.to_string())
-                        .unwrap_or("?".to_string()),
-                    data.len()
-                )
-            };
+            }
 
-            let image_detection_report = match ImageReader::new(Cursor::new(data))
-                .with_guessed_format()
-                .map_err(anyhow::Error::from)
-                .and_then(|v| v.decode().map_err(anyhow::Error::from))
-            {
-                Err(err) => format!("Media detection failed: {:?}", err),
-                _ => String::new(),
-            };
-
-            let final_report = if metadata_report.is_empty() && image_detection_report.is_empty() {
+            let final_report = if reports.is_empty() {
                 None
             } else {
-                let final_report = format!(
-                    "Artifact {}: {}",
-                    image,
-                    [metadata_report, image_detection_report].join(",")
-                );
-                Some(final_report)
+                Some(format!("Artifact {}: {}", image, reports.join(",")))
             };
 
             Ok(final_report)
@@ -350,7 +355,8 @@ impl SmugMugFolder {
             .filter(|v| v.archived_uri.is_some())
             .map(|v| {
                 let path = PathBuf::from(path.as_ref());
-                tokio::spawn(async move { verifier(path, v).await })
+                let video_infos = video_infos.clone();
+                tokio::spawn(async move { verifier(path, v, video_infos).await })
             })
             .collect::<TryJoinAll<_>>()
             .await?
@@ -364,61 +370,139 @@ impl SmugMugFolder {
     }
 
     /// Download artifacts from SmugMug to the given directory
-    pub async fn sync_artifacts<P: AsRef<Path>>(&self, path: P, client: Client) -> Result<()> {
+    pub async fn sync_artifacts<P: AsRef<Path>>(
+        &self,
+        path: P,
+        video_info_dir: P,
+        client: Client,
+    ) -> Result<()> {
         if !self.are_images_populated() {
             return Err(anyhow!("artifacts metadata must be populated"));
         }
 
-        // verifies the binary data
-        let binary_verifier = async |prefix_msg: &str, image: Arc<Image>, data: Vec<u8>| {
-            match image.archived_md5.as_ref() {
-                Some(md5sum) => {
-                    let digest = format!("{:x}", md5::compute(&data));
-                    if &digest != md5sum {
-                        log::warn!(
-                            "{}Artifact: {} md5sum didn't match: {} calculated:{}, size: {:?}, downloaded size: {}",
-                            prefix_msg,
+        remove_partial_files(path.as_ref())?;
+        remove_partial_files(video_info_dir.as_ref())?;
+        let known_videos = VideoInfo::load_all(video_info_dir.as_ref())?;
+
+        // Downloads the largest video rendition for a video artifact and sends its info to be saved
+        let video_downloader = async |image: Arc<Image>,
+                                      video_info_tx: mpsc::UnboundedSender<(String, VideoInfo)>|
+               -> Result<()> {
+            let artifacts_dir = path.as_ref();
+
+            if let Some(info) = known_videos.get(&image.image_key) {
+                let video_path = info.video_path(artifacts_dir, &image.image_key);
+                if std::fs::metadata(&video_path).is_ok_and(|v| v.len() > 0) {
+                    return Ok(());
+                }
+            }
+
+            let result = with_retries(&format!("Downloading video: {}", image), || async {
+                let video = {
+                    let _req_limiter = self.client_req_limiter.acquire().await.unwrap();
+                    image.largest_video_with_client(client.clone()).await?
+                };
+                let Some(video) = video else {
+                    return Ok(None);
+                };
+                let info = VideoInfo::from(&video);
+                let video_path = info.video_path(artifacts_dir, &image.image_key);
+
+                // A video already on disk but not recorded (e.g. from an interrupted sync)
+                // is kept if it matches what SmugMug reports.  Hashing it is blocking work.
+                let already_downloaded = std::fs::metadata(&video_path).is_ok_and(|v| v.len() > 0)
+                    && {
+                        let (video_path, info) = (video_path.clone(), info.clone());
+                        matches!(
+                            tokio::task::spawn_blocking(move || check_video_file(
+                                &video_path,
+                                &info
+                            ))
+                            .await?,
+                            Ok(None)
+                        )
+                    };
+
+                let problem = if already_downloaded {
+                    None
+                } else {
+                    log::debug!(
+                        "Downloading video: {} to: {}",
+                        &image,
+                        video_path.as_os_str().to_string_lossy()
+                    );
+                    let data = {
+                        let _req_limiter = self.client_req_limiter.acquire().await.unwrap();
+                        video.download_with_client(client.clone()).await?
+                    };
+                    // Write and check the data while it's in memory, off the download task
+                    let (video_path, info) = (video_path.clone(), info.clone());
+                    tokio::task::spawn_blocking(move || {
+                        write_file_atomically(&video_path, &data)?;
+                        Ok::<_, anyhow::Error>(video_mismatch(
+                            &info,
+                            &bytes_md5(&data),
+                            data.len() as u64,
+                        ))
+                    })
+                    .await??
+                };
+                Ok(Some((info, video_path, already_downloaded, problem)))
+            })
+            .await?;
+
+            match result {
+                Some((info, video_path, already_downloaded, problem)) => {
+                    if already_downloaded {
+                        log::info!(
+                            "Recorded existing Video: {} at: {}",
                             &image,
-                            md5sum,
-                            digest,
-                            image.archived_size,
-                            data.len()
+                            video_path.as_os_str().to_string_lossy()
+                        );
+                    } else {
+                        if let Some(problem) = problem {
+                            log::warn!("Video: {}: {}", &image, problem);
+                        }
+                        log::info!(
+                            "Downloaded Video: {} to: {}",
+                            &image,
+                            video_path.as_os_str().to_string_lossy()
                         );
                     }
+                    video_info_tx.send((image.image_key.clone(), info))?;
                 }
-                None => {
-                    log::warn!(
-                        "{}Artifact: {} due to already exists. NOTE!!! The smugmug md5sum doesn't exist",
-                        prefix_msg,
-                        &image
-                    );
-                }
-            };
-
-            if let Err(err) = ImageReader::new(Cursor::new(data))
-                .with_guessed_format()
-                .map_err(anyhow::Error::from)
-                .and_then(|v| v.decode().map_err(anyhow::Error::from))
-            {
-                log::warn!(
-                    "Artifact: {} binary type failed to be detected: {:?}",
-                    image,
-                    err
-                );
+                None => log::warn!("Video: {} has no video available on SmugMug", &image),
             }
+            Ok(())
         };
 
         // Downloads the artifact
-        let artifact_downloader = async |image: Arc<Image>| -> Result<()> {
+        let artifact_downloader = async |image: Arc<Image>,
+                                         video_info_tx: mpsc::UnboundedSender<(
+            String,
+            VideoInfo,
+        )>|
+               -> Result<()> {
             let mut path = PathBuf::from(path.as_ref());
             path.push(&image.image_key);
 
+            // The ArchivedUri returns a placeholder image while SmugMug is processing, so skip it
+            if image.is_processing {
+                log::warn!(
+                    "Artifact: {} is still processing on SmugMug (uploaded {}). Skipping download",
+                    &image,
+                    image.date_created
+                );
+                return Ok(());
+            }
+
+            // For videos the ArchivedUri is only the poster frame, so the video is fetched separately
+            if image.is_video {
+                video_downloader(image.clone(), video_info_tx).await?;
+            }
+
             if std::fs::exists(&path).unwrap_or_default() {
-                let existing_data = std::fs::read(&path)?;
-                if !existing_data.is_empty() {
-                    // tokio::spawn(async move {
-                    //     binary_verifier("Skipping download of ", image, existing_data).await;
-                    // });
+                if std::fs::metadata(&path)?.len() > 0 {
                     return Ok(());
                 }
 
@@ -434,40 +518,44 @@ impl SmugMugFolder {
                 path.as_os_str().to_string_lossy()
             );
 
-            let mut retries = 0;
-            let image_data = loop {
-                let req_limiter = self.client_req_limiter.acquire().await.unwrap();
-                let image_get_result = image.get_archive_with_client(client.clone()).await;
-                drop(req_limiter);
-                match image_get_result {
-                    Ok(data) => break data,
-                    Err(err) => {
-                        retries += 1;
-                        if retries >= 3 {
-                            return Err(anyhow::Error::from(err));
-                        } else {
-                            log::warn!(
-                                "Downloading image: {} to: {} retry #: {}",
-                                &image,
-                                path.as_os_str().to_string_lossy(),
-                                retries,
-                            );
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            };
+            let image_data = with_retries(
+                &format!(
+                    "Downloading image: {} to: {}",
+                    image,
+                    path.as_os_str().to_string_lossy()
+                ),
+                || async {
+                    let _req_limiter = self.client_req_limiter.acquire().await.unwrap();
+                    Ok(image.get_archive_with_client(client.clone()).await?)
+                },
+            )
+            .await?;
 
             if !image_data.is_empty() {
-                std::fs::write(&path, &image_data)?;
+                // Writing, hashing and decoding are blocking work, so keep them off the task
+                // that drives every download
+                let checks = {
+                    let (path, image) = (path.clone(), image.clone());
+                    tokio::task::spawn_blocking(move || {
+                        write_file_atomically(&path, &image_data)?;
+                        Ok::<_, anyhow::Error>(check_image_file(&path, &image))
+                    })
+                    .await??
+                };
                 log::info!(
                     "Downloaded Artifact: {} to: {}",
                     &image,
                     path.as_os_str().to_string_lossy()
                 );
-                tokio::spawn(async move {
-                    binary_verifier("", image, image_data.to_vec()).await;
-                });
+                // A failed check is reported, the same as by the verifier, rather than stopping the sync
+                match checks {
+                    Ok(problems) => {
+                        for problem in problems {
+                            log::warn!("Artifact: {}: {}", &image, problem);
+                        }
+                    }
+                    Err(err) => log::warn!("Artifact: {} couldn't be checked: {:?}", &image, err),
+                }
             } else {
                 log::error!("Artifact: {} had 0 data", &image);
             }
@@ -475,12 +563,143 @@ impl SmugMugFolder {
             Ok(())
         };
 
-        self.get_unique_artifacts_metadata()
-            .into_iter()
-            .filter(|v| v.archived_uri.is_some())
-            .map(artifact_downloader)
-            .collect::<TryJoinAll<_>>()
+        let (video_info_tx, video_info_rx) = mpsc::unbounded_channel();
+        let downloads = async {
+            let result = self
+                .get_unique_artifacts_metadata()
+                .into_iter()
+                .filter(|v| v.archived_uri.is_some())
+                .map(|v| artifact_downloader(v, video_info_tx.clone()))
+                .collect::<TryJoinAll<_>>()
+                .await;
+            drop(video_info_tx); // Close the channel so the saver knows to stop
+            result
+        };
+
+        // Saves video info in batches so an interrupted sync keeps what it already recorded
+        let video_info_saver = save_in_batches(video_info_rx, 100, |batch| {
+            VideoInfo::save_all(video_info_dir.as_ref(), batch)
+        });
+
+        let (downloaded, saved) = tokio::join!(downloads, video_info_saver);
+        saved?;
+        downloaded?;
+
+        Ok(())
+    }
+
+    /// Downloads the EXIF/IPTC metadata SmugMug holds for each artifact into the given directory.
+    /// Albums whose images all have metadata saved already are skipped.
+    pub async fn sync_image_metadata<P: AsRef<Path>>(
+        &self,
+        image_metadata_dir: P,
+        client: Client,
+    ) -> Result<()> {
+        if !self.are_images_populated() {
+            return Err(anyhow!("artifacts metadata must be populated"));
+        }
+
+        // Images already saved, plus those saved during this run since images can be in
+        // more than one album
+        remove_partial_files(image_metadata_dir.as_ref())?;
+        let recorded = std::sync::Mutex::new(ImageMetadataRecord::load_recorded_keys(
+            image_metadata_dir.as_ref(),
+        )?);
+
+        let albums: Vec<Arc<Album>> = {
+            let recorded = recorded.lock().unwrap();
+            self.tree
+                .get_nodes()
+                .iter()
+                .filter_map(|ds_node| ds_node.get_value().ok().flatten())
+                .filter(|album| {
+                    self.album_image_map
+                        .get(&album.album_key)
+                        .is_some_and(|images| {
+                            images.iter().any(|v| !recorded.contains(&v.image_key))
+                        })
+                })
+                .collect()
+        };
+        log::info!("Getting image metadata for {} albums", albums.len());
+
+        // Gets the metadata for an album's images and sends the ones not yet saved
+        let album_collector = async |album: Arc<Album>,
+                                     tx: mpsc::UnboundedSender<ImageMetadataRecord>|
+               -> Result<()> {
+            let items = with_retries(
+                &format!("Getting image metadata for album: {}", album),
+                || async {
+                    let _req_limiter = self.client_req_limiter.acquire().await.unwrap();
+                    let images = album.images_with_metadata_with_client(client.clone())?;
+                    pin_mut!(images);
+                    let mut items = Vec::new();
+                    while let Some(item) = images.next().await {
+                        items.push(item?);
+                    }
+                    Ok(items)
+                },
+            )
             .await?;
+
+            // Saves a record and marks the image as done.  Images SmugMug has no metadata for
+            // get a record without metadata so their album isn't fetched again on every run.
+            let save = |image: &Image, metadata: Option<&ImageMetadata>| -> Result<bool> {
+                if recorded.lock().unwrap().contains(&image.image_key) {
+                    return Ok(false);
+                }
+                tx.send(ImageMetadataRecord::new(image, metadata)?)?;
+                recorded.lock().unwrap().insert(image.image_key.clone());
+                Ok(true)
+            };
+
+            let mut num_saved = 0;
+            let mut returned_keys = HashSet::new();
+            for item in &items {
+                returned_keys.insert(item.image.image_key.as_str());
+                if item.metadata.is_none() {
+                    log::warn!("Artifact: {} has no metadata on SmugMug", item.image);
+                }
+                num_saved += save(&item.image, item.metadata.as_ref())? as usize;
+            }
+
+            // Images synced locally that SmugMug no longer lists in this album
+            for image in self
+                .album_image_map
+                .get(&album.album_key)
+                .into_iter()
+                .flatten()
+            {
+                if !returned_keys.contains(image.image_key.as_str()) && save(image, None)? {
+                    log::warn!(
+                        "Artifact: {} isn't listed in album: {} on SmugMug, so has no metadata",
+                        image,
+                        album
+                    );
+                }
+            }
+
+            log::info!("Got metadata for {} images in album: {}", num_saved, album);
+            Ok(())
+        };
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let collectors = async {
+            let result = albums
+                .into_iter()
+                .map(|v| album_collector(v, tx.clone()))
+                .collect::<TryJoinAll<_>>()
+                .await;
+            drop(tx); // Close the channel so the saver knows to stop
+            result
+        };
+        let saver = save_in_batches(rx, 1000, |batch| {
+            ImageMetadataRecord::save_all(image_metadata_dir.as_ref(), batch)
+        });
+
+        let (collected, saved) = tokio::join!(collectors, saver);
+        saved?;
+        collected?;
 
         Ok(())
     }
@@ -503,7 +722,7 @@ impl SmugMugFolder {
             .tree
             .get_nodes()
             .iter()
-            .flat_map(|ds_node| ds_node.get_value())
+            .filter_map(|ds_node| ds_node.get_value().ok().flatten())
             .fold(SmugMugFolderStats::new(), |mut acc, album| {
                 acc.total_data_usage_in_bytes += album.total_sizes.unwrap_or_default() as usize;
                 acc.original_data_usage_in_bytes +=
@@ -548,7 +767,7 @@ impl SmugMugFolder {
             .tree
             .get_nodes()
             .iter()
-            .flat_map(|ds_node| ds_node.get_value())
+            .filter_map(|ds_node| ds_node.get_value().ok().flatten())
             .filter(|album| {
                 album.upload_key.is_some()
                     && (cutoff_from_date_created_dt > album.date_created.unwrap_or(Utc::now())
@@ -622,6 +841,58 @@ impl SmugMugFolder {
 
         Ok(was_updated)
     }
+}
+
+/// Checks a downloaded image artifact against SmugMug's metadata and that it decodes.
+/// The file is streamed for the md5sum rather than read into memory.  Returns each problem found.
+fn check_image_file(path: &Path, image: &Image) -> Result<Vec<String>> {
+    let (digest, size) = file_md5(path)?;
+    let archived_size = image
+        .archived_size
+        .map(|v| v.to_string())
+        .unwrap_or("?".to_string());
+
+    let mut problems = Vec::new();
+    match image.archived_md5.as_ref() {
+        Some(md5sum) if md5sum == &digest => {}
+        Some(md5sum) => problems.push(format!(
+            "Metadata doesn't match.  md5: {}:{}, size {},{}",
+            md5sum, digest, archived_size, size
+        )),
+        None => problems.push(format!(
+            "Metadata doesn't match.  md5: missing, size {},{}",
+            archived_size, size
+        )),
+    }
+
+    if let Err(err) = ImageReader::open(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|v| v.with_guessed_format().map_err(anyhow::Error::from))
+        .and_then(|v| v.decode().map_err(anyhow::Error::from))
+    {
+        problems.push(format!("Media detection failed: {:?}", err));
+    }
+
+    Ok(problems)
+}
+
+/// Checks a downloaded video against the info SmugMug reported for it.  Returns the problem if any.
+fn check_video_file(path: &Path, info: &VideoInfo) -> Result<Option<String>> {
+    let (digest, size) = file_md5(path)?;
+    Ok(video_mismatch(info, &digest, size))
+}
+
+/// Describes how a video's md5sum and size differ from what SmugMug reported, if they do
+fn video_mismatch(info: &VideoInfo, digest: &str, size: u64) -> Option<String> {
+    (!info.matches(digest, size)).then(|| {
+        format!(
+            "Video metadata doesn't match.  md5: {}:{}, size {},{}",
+            info.md5.as_deref().unwrap_or("missing"),
+            digest,
+            info.size.map(|v| v.to_string()).unwrap_or("?".to_string()),
+            size
+        )
+    })
 }
 
 impl std::fmt::Display for SmugMugFolder {
