@@ -22,4 +22,4 @@ database version in the entry.
 - Linux and macOS release binaries on GitHub, built by the release workflow.
 - CI (fmt, clippy, tests), CodeQL, `cargo deny` and Dependabot.
 
-[Unreleased]: https://github.com/cch71/smugmug_syncer/commits/main
+[Unreleased]: https://github.com/cch71/smugmug_syncer/compare/v0.1.0...HEAD
