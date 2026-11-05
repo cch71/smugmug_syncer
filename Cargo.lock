@@ -4099,6 +4099,7 @@ dependencies = [
  "md5",
  "pkg-config",
  "polars",
+ "semver",
  "serde",
  "serde_json",
  "smugmug",

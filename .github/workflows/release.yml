@@ -1,0 +1,234 @@
+name: Release
+
+# Runs when a version tag is pushed, e.g. by `cargo release patch --execute` (see release.toml),
+# or when a tag is created from the GitHub "Draft a new release" page.  Builds the
+# smugmug-syncer binary for Linux and macOS and attaches the archives to the GitHub release for
+# the tag.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build the release for, e.g. v0.1.0
+        required: true
+      platforms:
+        description: >-
+          Platforms to build, comma separated (linux-x86_64, macos-aarch64).  Empty builds all
+          of them.
+        required: false
+        default: ""
+      reuse-packages-from-run:
+        description: >-
+          ID of an earlier Release run for the same tag whose packages should be attached too,
+          e.g. to rebuild only the platform that failed.  Empty attaches only this run's.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  plan:
+    name: Choose platforms
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          PLATFORMS: ${{ github.event.inputs.platforms }}
+          REUSE_RUN: ${{ github.event.inputs.reuse-packages-from-run }}
+        run: |
+          # linux-x86_64 is pinned to the Ubuntu release whose dlib/OpenCV packages the binary
+          # links against (and whose glibc, 2.39, it needs).  Don't use ubuntu-latest, which
+          # would silently change the packages users must install.
+          # No Windows (dlib and OpenCV aren't packaged for it; use WSL) and no Intel macOS
+          # (Homebrew no longer ships bottles for it, so dlib/OpenCV would build from source).
+          all='[
+            {"name": "linux-x86_64", "os": "ubuntu-24.04"},
+            {"name": "macos-aarch64", "os": "macos-latest"}
+          ]'
+          if [[ -n "$REUSE_RUN" && ! "$REUSE_RUN" =~ ^[0-9]+$ ]]; then
+            echo "::error::reuse-packages-from-run must be a numeric run ID"
+            exit 1
+          fi
+          wanted=$(jq -cn --arg p "$PLATFORMS" '$p | gsub("\\s"; "") | split(",") | map(select(. != ""))')
+          unknown=$(jq -cn --argjson all "$all" --argjson w "$wanted" '$w - ($all | map(.name))')
+          if [ "$unknown" != "[]" ]; then
+            echo "::error::Unknown platforms: $unknown"
+            exit 1
+          fi
+          matrix=$(jq -cn --argjson all "$all" --argjson w "$wanted" \
+            '{include: [$all[] | select(($w | length) == 0 or (.name | IN($w[])))]}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          jq . <<< "$matrix"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Check the tag matches the Cargo.toml version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG doesn't match Cargo.toml version $version"
+            exit 1
+          fi
+
+      # No build cache here: release builds start clean so a poisoned cache can't reach them
+      - uses: ./.github/actions/setup-build
+
+      - run: cargo build --release --locked
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          out=$(target/release/smugmug-syncer --version)
+          echo "$out"
+          if [[ "$out" != "smugmug-syncer ${TAG#v}" ]]; then
+            echo "::error::Unexpected --version output"
+            exit 1
+          fi
+          target/release/smugmug-syncer --help > /dev/null
+
+      - name: List runtime dependencies
+        shell: bash
+        run: |
+          # Written into the archive so users know which system packages to install
+          {
+            if [ "$RUNNER_OS" = Linux ]; then
+              echo "Install these Ubuntu/Debian packages before running smugmug-syncer:"
+              echo
+              ldd target/release/smugmug-syncer | awk '$3 ~ /^\// { print $3 }' |
+                while read -r lib; do
+                  # dpkg knows a library by either its /lib or its merged /usr/lib path
+                  dpkg -S "$lib" 2> /dev/null || dpkg -S "$(realpath "$lib")" 2> /dev/null || true
+                done | cut -d: -f1 | sort -u | grep -v -E '^(libc6|libgcc-s1|libstdc\+\+6)$' |
+                sed 's/^/  /'
+            else
+              echo "Install these Homebrew formulae before running smugmug-syncer:"
+              echo
+              echo "  brew install dlib opencv"
+              echo
+              echo "Linked libraries:"
+              otool -L target/release/smugmug-syncer | awk 'NR > 1 { print "  " $1 }' |
+                grep -v -E '^  /(usr/lib|System)/'
+            fi
+          } > DEPENDENCIES.txt
+          cat DEPENDENCIES.txt
+
+      - name: Archive
+        shell: bash
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          dir="smugmug-syncer_${TAG#v}_${NAME}"
+          mkdir -p "$dir" upload
+          cp target/release/smugmug-syncer DEPENDENCIES.txt README.md HOWTO_LABEL_IMAGES.md \
+            CHANGELOG.md LICENSE-APACHE LICENSE-MIT "$dir/"
+          tar -czf "upload/$dir.tar.gz" "$dir"
+          ls -l upload
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-${{ matrix.name }}
+          path: upload/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Only used to download packages from an earlier run (reuse-packages-from-run)
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Download packages from an earlier run
+        if: github.event.inputs.reuse-packages-from-run != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: packages-*
+          path: packages
+          merge-multiple: true
+          run-id: ${{ github.event.inputs.reuse-packages-from-run }}
+          github-token: ${{ github.token }}
+
+      # Downloaded second, so packages rebuilt by this run replace the earlier run's
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: packages-*
+          path: packages
+          merge-multiple: true
+
+      - name: Check every package is for this version
+        run: |
+          version="${TAG#v}"
+          ls -l packages
+          for file in packages/*; do
+            if [[ "$(basename "$file")" != *"_${version}_"* ]]; then
+              echo "::error::$file isn't a $version package"
+              exit 1
+            fi
+          done
+
+      - name: Checksums
+        working-directory: packages
+        run: sha256sum -- * | tee SHA256SUMS.txt
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${TAG#v}"
+          # The section for this version, up to the next version heading or link list
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          db_version=$(sed -n 's/^pub(crate) const DB_VERSION: &str = "\(.*\)";/\1/p' src/local_folder.rs)
+          {
+            echo
+            echo "Archive database version: \`${db_version}\` (stored as \`db_version\` in \`.smugmug_db/props.json\`)."
+            echo
+            echo "See the [README](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/README.md#installing-a-release) for installation instructions."
+          } >> notes.md
+          cat notes.md
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A release drafted on github.com for this tag is kept and gets the packages added
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            flags=()
+            # Tags like v1.2.0-rc.1 are pre-releases
+            [[ "$TAG" == *-* ]] && flags+=(--prerelease)
+            gh release create "$TAG" --verify-tag --title "$TAG" \
+              --notes-file notes.md --generate-notes "${flags[@]}"
+          fi
+          gh release upload "$TAG" packages/* --clobber

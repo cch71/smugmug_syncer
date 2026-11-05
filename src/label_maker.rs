@@ -50,10 +50,7 @@ impl LabelMaker {
 
         let presorted_embeddings =
             find_embeddings_in_label_dirs(label_dirs, self.detection_df.clone()).await?;
-        log::debug!(
-            "Pre-sorted embeddings size: {}",
-            &presorted_embeddings.len()
-        );
+        log::debug!("Pre-sorted embeddings size: {}", presorted_embeddings.len());
         // Compare the embeddings to the unsorted images in the facial thumbnails directory
         let unsorted_embeddings = embeddings_collector_for_dir(
             self.path_finder.get_facial_thumbnails_dir(),
@@ -77,7 +74,7 @@ impl LabelMaker {
             }
         });
 
-        log::debug!("Sorted images size: {}", &sorted_faces.len());
+        log::debug!("Sorted images size: {}", sorted_faces.len());
         let sorted_thumbnail_dir = self.path_finder.get_sorted_facial_thumbnails_dir();
         let unsorted_thumbnail_dir = self.path_finder.get_facial_thumbnails_dir();
         sort_thumbnails_into_dirs(sorted_faces, sorted_thumbnail_dir, unsorted_thumbnail_dir)?;
@@ -190,11 +187,11 @@ async fn find_embeddings_in_label_dirs(
         .map(|(label, label_dir)| {
             let df = detection_df.clone();
             tokio::spawn(async move {
-                log::debug!("Processing label {} dir: {}", &label, label_dir.display());
+                log::debug!("Processing label {} dir: {}", label, label_dir.display());
                 let embeddings = embeddings_collector_for_dir(label_dir.clone(), df)?;
                 log::trace!(
                     "Finished processing label {} dir: {}",
-                    &label,
+                    label,
                     label_dir.display()
                 );
 
@@ -220,7 +217,7 @@ fn extract_detections_for_face_ids(
     face_ids: HashSet<String>,
     df: LazyFrame,
 ) -> Result<Vec<FaceDetection>> {
-    log::trace!("Extracting detections for: {}", &face_ids.len());
+    log::trace!("Extracting detections for: {}", face_ids.len());
     let face_id_filter_values: Vec<&str> = face_ids.iter().map(String::as_str).collect();
     let filter_series = Series::new("face_id_filter".into(), face_id_filter_values);
 
@@ -283,7 +280,7 @@ fn embeddings_collector_for_dir(
     log::debug!(
         "For {} found these detections {}",
         thumbnail_dir.display(),
-        &found_detections.len()
+        found_detections.len()
     );
 
     Ok(found_detections)

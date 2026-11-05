@@ -1,0 +1,36 @@
+name: Set up build
+description: >
+  Installs the Rust toolchain and the dlib, OpenCV, nlohmann-json and BLAS/LAPACK libraries the
+  face detector links against (apt on Linux, Homebrew on macOS).  Shared by the CI and release
+  workflows.
+inputs:
+  components:
+    description: Extra rustup components (comma separated)
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    # Keep this list in sync with the Dockerfile's builder stage
+    - name: Install Linux build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential pkg-config cmake libssl-dev libblas-dev liblapack-dev \
+          nlohmann-json3-dev libopencv-dev libdlib-dev
+
+    - name: Install macOS build dependencies
+      if: runner.os == 'macOS'
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+        HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      run: brew install pkg-config dlib opencv nlohmann-json
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      with:
+        toolchain: stable
+        components: ${{ inputs.components }}

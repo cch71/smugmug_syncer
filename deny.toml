@@ -1,0 +1,49 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+# Run locally with `cargo deny check`.
+
+[graph]
+# Check every feature's dependency tree
+all-features = true
+
+[advisories]
+# Unmaintained crates are reported for direct dependencies only; transitive ones are out of
+# our hands
+unmaintained = "workspace"
+ignore = [
+  # quick-xml under polars -> object_store, which only parses XML from cloud object stores
+  # (S3/Azure/GCS).  The syncer only reads and writes local parquet files, so it never parses
+  # untrusted XML.  Drop these once polars moves to a fixed object_store.
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml via object_store; no cloud stores used" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml via object_store; no cloud stores used" },
+]
+
+[licenses]
+confidence-threshold = 0.9
+# Permissive licenses only.  BSL-1.0 is xxhash-rust under polars; CDLA-Permissive-2.0 is the
+# root certificate bundle under reqwest
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "Unlicense",
+  "Unicode-3.0",
+  "NCSA",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

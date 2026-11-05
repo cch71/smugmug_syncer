@@ -17,7 +17,7 @@ pub(crate) async fn handle_query_req(path: &str, args: QueryArgs) -> Result<()> 
         if args.use_json_output {
             println!("{}", serde_json::to_string_pretty(&local_folder)?);
         } else {
-            println!("SmugMug Folder Tree:\n{}", &local_folder);
+            println!("SmugMug Folder Tree:\n{}", local_folder);
         }
     }
 

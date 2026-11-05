@@ -2,6 +2,13 @@
 name = "smugmug_syncer"
 version = "0.1.0"
 edition = "2024"
+authors = ["Craig Hamilton"]
+description = "Backs up a SmugMug account to a local folder and tags faces in it"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cch71/smugmug_syncer"
+readme = "README.md"
+# Distributed as binaries on GitHub releases, never on crates.io
+publish = false
 
 [[bin]]
 name = "smugmug-syncer"
@@ -46,6 +53,7 @@ polars = { version = "0.55.2", features = [
     "is_in",
 ] }
 uuid = { version = "1", features = ["v4"] }
+semver = "1"
 
 [build-dependencies]
 cxx-build = "1"

@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # Let new releases age a week before proposing them, so a compromised release has time
+    # to be found and yanked
+    cooldown:
+      default-days: 7
+    groups:
+      # One pull request for the polars crates, which must move together
+      polars:
+        patterns: ["polars*"]
+      minor-and-patch:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    # Let new releases age a week before proposing them, so a compromised release has time
+    # to be found and yanked
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

@@ -96,7 +96,7 @@ impl SmugMugFolder {
     pub async fn populate_image_map(&self, client: Client) -> Result<Self> {
         // Collects the images for an album and returns a tuple of album key and image collection
         let image_child_collector = async |album: Arc<Album>| -> Result<(String, Vec<Arc<Image>>)> {
-            log::debug!("Collecting image metadata for album: {}", &album);
+            log::debug!("Collecting image metadata for album: {}", album);
             let req_limiter = self.client_req_limiter.acquire().await.unwrap();
             let images = album.images_with_client(client.clone())?;
             drop(req_limiter);
@@ -110,7 +110,7 @@ impl SmugMugFolder {
             log::debug!(
                 "Collected metadata for {} images for album: {}",
                 image_info_list.len(),
-                &album
+                album
             );
             if log::log_enabled!(log::Level::Debug) {
                 let num_req_remaining = client
@@ -428,7 +428,7 @@ impl SmugMugFolder {
                 } else {
                     log::debug!(
                         "Downloading video: {} to: {}",
-                        &image,
+                        image,
                         video_path.as_os_str().to_string_lossy()
                     );
                     let data = {
@@ -456,22 +456,22 @@ impl SmugMugFolder {
                     if already_downloaded {
                         log::info!(
                             "Recorded existing Video: {} at: {}",
-                            &image,
+                            image,
                             video_path.as_os_str().to_string_lossy()
                         );
                     } else {
                         if let Some(problem) = problem {
-                            log::warn!("Video: {}: {}", &image, problem);
+                            log::warn!("Video: {}: {}", image, problem);
                         }
                         log::info!(
                             "Downloaded Video: {} to: {}",
-                            &image,
+                            image,
                             video_path.as_os_str().to_string_lossy()
                         );
                     }
                     video_info_tx.send((image.image_key.clone(), info))?;
                 }
-                None => log::warn!("Video: {} has no video available on SmugMug", &image),
+                None => log::warn!("Video: {} has no video available on SmugMug", image),
             }
             Ok(())
         };
@@ -490,7 +490,7 @@ impl SmugMugFolder {
             if image.is_processing {
                 log::warn!(
                     "Artifact: {} is still processing on SmugMug (uploaded {}). Skipping download",
-                    &image,
+                    image,
                     image.date_created
                 );
                 return Ok(());
@@ -508,13 +508,13 @@ impl SmugMugFolder {
 
                 log::warn!(
                     "Artifact: {} exists but is empty size. Retrying download",
-                    &image
+                    image
                 );
             }
 
             log::debug!(
                 "Downloading image: {} to: {}",
-                &image,
+                image,
                 path.as_os_str().to_string_lossy()
             );
 
@@ -544,20 +544,20 @@ impl SmugMugFolder {
                 };
                 log::info!(
                     "Downloaded Artifact: {} to: {}",
-                    &image,
+                    image,
                     path.as_os_str().to_string_lossy()
                 );
                 // A failed check is reported, the same as by the verifier, rather than stopping the sync
                 match checks {
                     Ok(problems) => {
                         for problem in problems {
-                            log::warn!("Artifact: {}: {}", &image, problem);
+                            log::warn!("Artifact: {}: {}", image, problem);
                         }
                     }
-                    Err(err) => log::warn!("Artifact: {} couldn't be checked: {:?}", &image, err),
+                    Err(err) => log::warn!("Artifact: {} couldn't be checked: {:?}", image, err),
                 }
             } else {
-                log::error!("Artifact: {} had 0 data", &image);
+                log::error!("Artifact: {} had 0 data", image);
             }
 
             Ok(())

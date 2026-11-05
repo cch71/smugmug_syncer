@@ -1,5 +1,9 @@
 # SmugMug Synchronizer
 
+[![CI](https://github.com/cch71/smugmug_syncer/actions/workflows/ci.yml/badge.svg)](https://github.com/cch71/smugmug_syncer/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/cch71/smugmug_syncer/actions/workflows/codeql.yml/badge.svg)](https://github.com/cch71/smugmug_syncer/actions/workflows/codeql.yml)
+[![Security](https://github.com/cch71/smugmug_syncer/actions/workflows/security.yml/badge.svg)](https://github.com/cch71/smugmug_syncer/actions/workflows/security.yml)
+
 This tool provides some basic functionality for manipulating SmugMug accounts.
 It can:
 
@@ -14,6 +18,36 @@ It can:
 - Supports the ability to tag images via AI analysis.
   - This is a multi step process that will be explained in the
     [Image Labeling instructions](HOWTO_LABEL_IMAGES.md)
+
+## Installing a release
+
+Prebuilt binaries are on the [Releases page](https://github.com/cch71/smugmug_syncer/releases).
+Each archive holds the `smugmug-syncer` binary and a `DEPENDENCIES.txt` listing the system
+libraries it needs. `SHA256SUMS.txt` lists a checksum for each archive.
+
+| Platform | Archive | Libraries |
+| --- | --- | --- |
+| macOS, Apple silicon | `smugmug-syncer_<version>_macos-aarch64.tar.gz` | `brew install dlib opencv` |
+| Linux x86_64 (Ubuntu 24.04+, Debian 13+) | `smugmug-syncer_<version>_linux-x86_64.tar.gz` | the apt packages in `DEPENDENCIES.txt` |
+
+```console
+➜  tar -xzf smugmug-syncer_<version>_<platform>.tar.gz
+➜  cd smugmug-syncer_<version>_<platform>
+➜  ./smugmug-syncer --version
+```
+
+On macOS, a downloaded binary is quarantined; clear it with
+`xattr -d com.apple.quarantine smugmug-syncer`. The Linux binary is built against Ubuntu
+24.04's dlib and OpenCV 4.6 packages, so it needs glibc 2.39 or newer. Other platforms (Intel
+macOS, Windows via WSL with an older Ubuntu) can build from source as below, or use Docker.
+
+### Archive database version
+
+The archive's `.smugmug_db/props.json` records `db_version`, the
+[semver](https://semver.org/) version of the database layout (`smugmug-syncer --version`
+shows the one a build uses). A change to the major version means older readers, such as an
+older smugmug_syncer_viewer, can't read the archive; a minor version adds data older readers
+ignore. The syncer refuses to write to an archive with a different major version.
 
 ## Building
 
@@ -238,6 +272,51 @@ Useful for not having to specify it on the command line repeatedly.
 recognition/tagging functionality
 
 _A .env file can be created in the working directory that contains these as well._
+
+## Development
+
+```console
+cargo fmt --all --check
+cargo clippy --release --all-targets -- -D warnings
+cargo test --release
+cargo deny check          # advisories, licenses, sources
+```
+
+## Releasing
+
+Releases are made with [cargo-release](https://github.com/crate-ci/cargo-release) (configured
+in [release.toml](release.toml)). Nothing is published to crates.io.
+
+1. Add the changes to the `## [Unreleased]` section of [CHANGELOG.md](CHANGELOG.md) and
+   commit them. If the `.smugmug_db` layout changed, bump `DB_VERSION` in
+   `src/local_folder.rs` too (see [AGENTS.md](AGENTS.md#database-version)).
+2. Do a dry run, then the release. Use `patch`, `minor` or `major` to choose the version, or
+   leave it out to release the version already in `Cargo.toml`:
+
+   ```bash
+   cargo release patch
+   cargo release patch --execute
+   ```
+
+   This bumps the version and dates the changelog. It then commits, creates the tag `vX.Y.Z`,
+   and pushes both.
+3. The pushed tag starts [the release workflow](.github/workflows/release.yml). It builds
+   `.tar.gz` archives for Linux x86_64 and macOS Apple silicon, then creates the GitHub
+   release with notes from the changelog (plus the database version), attaches the archives
+   and `SHA256SUMS.txt`, and adds GitHub's generated notes.
+
+A release can also be started by creating a `vX.Y.Z` tag from GitHub's **Draft a new
+release** page, or by re-running the workflow manually with an existing tag. The tag has to
+match the `Cargo.toml` version, or the build stops.
+
+If only some platforms fail, fix the workflow on `main`, then rebuild just those platforms
+without retagging. Run **Release** manually from `main` with the existing tag, the failed
+platforms and the failed run's ID (the number in its URL) as `reuse-packages-from-run`:
+
+```bash
+gh workflow run release.yml --ref main -f tag=v0.1.0 -f platforms=linux-x86_64 \
+  -f reuse-packages-from-run=<run-id>
+```
 
 ## License
 

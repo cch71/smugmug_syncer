@@ -12,9 +12,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use polars::prelude::*;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use smugmug::v2::{Client, Node};
 use std::io::BufReader;
@@ -44,11 +45,17 @@ impl LocalFolder {
     /// Opens the given local directory and reads in the smugmug metadata
     pub fn get(path: &str) -> Result<Self> {
         let path_finder = PathFinder::new(path)?;
+        let props_path = path_finder.get_props_file();
+        let (props, version_changed) = Self::read_and_check_props(&props_path)?;
 
         let smugmug_folder = SmugMugFolder::populate_from_file(
             path_finder.get_album_and_node_data_file(),
             path_finder.get_album_image_map_file_if_exists(),
         )?;
+
+        if version_changed {
+            Self::write_props_file(&props_path, props)?;
+        }
 
         Ok(Self {
             smugmug_folder,
@@ -76,7 +83,7 @@ impl LocalFolder {
         // Read the saved props before anything is downloaded or rewritten, so a props file that
         // can't be parsed stops the sync without changing any data
         let props_path = path_finder.get_props_file();
-        let mut new_props = Self::read_props_file(&props_path)?.unwrap_or_default();
+        let (mut new_props, version_changed) = Self::read_and_check_props(&props_path)?;
 
         let mut smugmug_folder =
             if force_update_if_exists || !path_finder.does_album_and_node_data_file_exists()? {
@@ -122,6 +129,8 @@ impl LocalFolder {
             if props.image_map_last_sync_ts.is_some() {
                 new_props.image_map_last_sync_ts = props.image_map_last_sync_ts
             }
+        }
+        if !props.are_all_none() || version_changed {
             Self::write_props_file(&props_path, new_props)?;
         }
 
@@ -183,6 +192,18 @@ impl LocalFolder {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.into()),
         }
+    }
+
+    /// Read the props file (defaults if it doesn't exist yet) and check its `db_version` is one
+    /// this build can work with.  Returns the props with `db_version` raised to [`DB_VERSION`]
+    /// and whether that changed them, in which case the caller writes them back.
+    ///
+    fn read_and_check_props(path: &PathBuf) -> Result<(Props, bool)> {
+        let mut props = Self::read_props_file(path)?.unwrap_or_default();
+        let changed = props
+            .stamp_db_version()
+            .with_context(|| format!("Checking {}", path.display()))?;
+        Ok((props, changed))
     }
 
     /// Write props file
@@ -258,7 +279,7 @@ impl LocalFolder {
                 log::debug!(
                     "Finished processing image: {} found {} faces",
                     image_path.file_stem().unwrap().to_str().unwrap(),
-                    &detections.iter().filter(|v| v.face_id.is_some()).count()
+                    detections.iter().filter(|v| v.face_id.is_some()).count()
                 );
 
                 if let Err(e) = tx.send(detections) {
@@ -381,11 +402,26 @@ impl LocalFolder {
     }
 }
 
+/// Version of the `.smugmug_db` layout this build reads and writes, stored as `db_version` in
+/// `props.json` so readers such as smugmug_syncer_viewer can tell whether they understand it.
+///
+/// It follows semver and is separate from the crate version:
+/// - major: a breaking change (a file, directory or column renamed, removed or retyped), which
+///   readers of the old layout can't handle
+/// - minor: an additive change (a new file, directory or optional column), which readers of the
+///   old layout can ignore
+/// - patch: a fix that doesn't change the layout
+///
+/// Archives written before the version was recorded have the 1.0.0 layout.
+pub(crate) const DB_VERSION: &str = "1.0.0";
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 struct Props {
     album_node_last_sync_ts: Option<DateTime<Utc>>,
     image_map_last_sync_ts: Option<DateTime<Utc>>,
+    /// Layout version of the `.smugmug_db` directory, see [`DB_VERSION`]
+    db_version: Option<String>,
 
     // Keys this version doesn't know about, kept so rewriting the file doesn't drop them
     #[serde(flatten)]
@@ -395,6 +431,39 @@ struct Props {
 impl Props {
     fn are_all_none(&self) -> bool {
         self.album_node_last_sync_ts.is_none() && self.image_map_last_sync_ts.is_none()
+    }
+
+    /// Checks that this build can work with the stored `db_version` and raises it to
+    /// [`DB_VERSION`] if it is older or missing.  Returns whether it changed, i.e. whether the
+    /// props need writing.  A stored version with a different major version is an error, so a
+    /// layout this build doesn't understand is never written to.  A newer minor version is
+    /// kept rather than lowered, since that layout is still compatible.
+    fn stamp_db_version(&mut self) -> Result<bool> {
+        let ours = Version::parse(DB_VERSION).expect("DB_VERSION is valid semver");
+        let Some(stored_str) = self.db_version.as_deref() else {
+            self.db_version = Some(DB_VERSION.to_string());
+            return Ok(true);
+        };
+        let stored = Version::parse(stored_str)
+            .with_context(|| format!("props.json has an invalid db_version '{stored_str}'"))?;
+        if stored.major > ours.major {
+            bail!(
+                "The archive's database is version {stored}, written by a newer smugmug_syncer. \
+                 This build supports {}.x; please upgrade smugmug_syncer.",
+                ours.major
+            );
+        }
+        if stored.major < ours.major {
+            bail!(
+                "The archive's database is version {stored}, which this build ({ours}) can't \
+                 migrate."
+            );
+        }
+        if stored < ours {
+            self.db_version = Some(DB_VERSION.to_string());
+            return Ok(true);
+        }
+        Ok(false)
     }
 }
 
@@ -456,5 +525,61 @@ impl DetectionDataFrameBuilder {
             "embeddings" => self.embeddings.to_owned(),
         ]?;
         Ok(df)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn props_with(version: Option<&str>) -> Props {
+        Props {
+            db_version: version.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn missing_db_version_is_stamped() {
+        let mut props = props_with(None);
+        assert!(props.stamp_db_version().unwrap());
+        assert_eq!(props.db_version.as_deref(), Some(DB_VERSION));
+    }
+
+    #[test]
+    fn current_db_version_is_unchanged() {
+        let mut props = props_with(Some(DB_VERSION));
+        assert!(!props.stamp_db_version().unwrap());
+    }
+
+    #[test]
+    fn newer_minor_db_version_is_kept() {
+        let ours = Version::parse(DB_VERSION).unwrap();
+        let newer = format!("{}.{}.0", ours.major, ours.minor + 1);
+        let mut props = props_with(Some(&newer));
+        assert!(!props.stamp_db_version().unwrap());
+        assert_eq!(props.db_version.as_deref(), Some(newer.as_str()));
+    }
+
+    #[test]
+    fn other_major_db_version_is_rejected() {
+        let ours = Version::parse(DB_VERSION).unwrap();
+        let newer = format!("{}.0.0", ours.major + 1);
+        assert!(props_with(Some(&newer)).stamp_db_version().is_err());
+        assert!(
+            props_with(Some("not a version"))
+                .stamp_db_version()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn props_keep_unknown_keys() {
+        let json = r#"{"album_node_last_sync_ts":null,"future_key":42}"#;
+        let mut props: Props = serde_json::from_str(json).unwrap();
+        props.stamp_db_version().unwrap();
+        let out = serde_json::to_value(&props).unwrap();
+        assert_eq!(out["future_key"], 42);
+        assert_eq!(out["db_version"], DB_VERSION);
     }
 }

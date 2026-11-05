@@ -53,8 +53,40 @@ directory in a polars/parquet format.
   `#[serde(flatten)]` catch-all map, so rewriting the file doesn't drop fields added by other
   versions or tools.
 
+### Database version
+
+`DB_VERSION` in `src/local_folder.rs` is the semver version of the `.smugmug_db` layout,
+stored as `db_version` in `props.json`. smugmug_syncer_viewer reads it to decide whether it
+can open an archive, so bump it in the same change as any layout change:
+
+- **major**: a file, directory or column is renamed, removed or changes type or meaning, so
+  readers of the old layout would break. Add a migration or a clear error for older archives.
+- **minor**: something is added (a file, directory or optional column) that older readers can
+  ignore.
+- **patch**: a fix that doesn't change the layout.
+
+Note the new database version in `CHANGELOG.md`.
+
+### CI, releases and dependencies
+
+- Releases go through `cargo release` (`release.toml`) and the tag-triggered
+  `.github/workflows/release.yml`. Keep `publish = false`: nothing goes to crates.io.
+- Record user-visible changes under `## [Unreleased]` in `CHANGELOG.md`. The release notes
+  are taken from it.
+- Pin third-party GitHub Actions to a full commit SHA with the version in a comment. Keep
+  workflow `permissions` minimal (read by default, write only on the job that needs it), and
+  check out with `persist-credentials: false`.
+- New dependencies must pass `cargo deny check`. Add a license to `deny.toml` only if it is
+  permissive or file-level copyleft.
+- Put setup that several workflows need in `.github/actions/setup-build` rather than
+  copying steps between them. Keep its Linux packages in sync with the `Dockerfile`.
+
 ## Checks before finishing
 
-- `cargo build --release` and `cargo clippy --release` add no new errors or warnings.
+- `cargo build --release` and `cargo clippy --release --all-targets -- -D warnings` add no
+  new errors or warnings, and `cargo fmt --all --check` passes.
+- `cargo test --release` and `cargo deny check` pass.
 - Changes to reading or writing metadata still load an existing `.smugmug_db` written by the
   previous version.
+- After editing workflows: `actionlint` and `zizmor --offline .github` report no new
+  findings.

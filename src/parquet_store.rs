@@ -46,7 +46,7 @@ pub(crate) fn save_dataframe(
     let file_id = Uuid::new_v4().simple().to_string();
     let file_path = root_path.join(format!("{}_{}.parquet", prefix, file_id));
 
-    log::debug!("Saving: {} at: {}", &df, file_path.display());
+    log::debug!("Saving: {} at: {}", df, file_path.display());
 
     let mut data = Vec::new();
     ParquetWriter::new(&mut data)

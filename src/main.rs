@@ -21,7 +21,7 @@ mod tagging;
 mod tokens;
 
 use anyhow::Result;
-use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, error::ErrorKind};
 use dotenvy::dotenv;
 use path_finder::PathFinder;
 use querier::handle_query_req;
@@ -57,6 +57,7 @@ A .env file can be created in the working directory that contains these as well.
 
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "smugmug-syncer")]
+#[command(version)]
 #[command(about = "Utility for managing local backup of SmugMug data", long_about = Some(LONG_ABOUT))]
 struct Cli {
     /// Directory where synchronized data will be stored.
@@ -194,7 +195,7 @@ async fn handle_cli_arg(args: Cli) -> Result<()> {
             .exit()
         });
 
-    log::debug!("Using Local Path: {}", &local_path);
+    log::debug!("Using Local Path: {}", local_path);
 
     match args.command {
         Commands::Sync(mut sync_args) => {
@@ -222,7 +223,18 @@ async fn main() -> Result<()> {
     dotenv().ok();
     env_logger::init();
     log::debug!("+++ syncer");
-    let args = Cli::parse();
+    // `--version` also shows the .smugmug_db layout version this build reads and writes
+    let matches = Cli::command()
+        .long_version(
+            format!(
+                "{} (db {})",
+                env!("CARGO_PKG_VERSION"),
+                local_folder::DB_VERSION
+            )
+            .leak() as &str,
+        )
+        .get_matches();
+    let args = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     handle_cli_arg(args).await?;
 
