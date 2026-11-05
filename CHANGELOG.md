@@ -11,6 +11,8 @@ database version in the entry.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-05
+
 ### Added
 
 - `db_version` in `.smugmug_db/props.json` records the semver version of the archive's
@@ -22,4 +24,5 @@ database version in the entry.
 - Linux and macOS release binaries on GitHub, built by the release workflow.
 - CI (fmt, clippy, tests), CodeQL, `cargo deny` and Dependabot.
 
-[Unreleased]: https://github.com/cch71/smugmug_syncer/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/cch71/smugmug_syncer/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/cch71/smugmug_syncer/releases/tag/v1.0.0
