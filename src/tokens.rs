@@ -30,10 +30,7 @@ async fn get_smugmug_tokens_from_service(
     // step 3. acquire access token
     let access_token =
         oauth1_access_token(consumer_key, consumer_secret, &request_token, pin).await?;
-    println!(
-        "your token and secret is: \n token: {}\n secret: {}",
-        access_token.token, access_token.secret
-    );
+    println!("OAuth access token acquired successfully.");
 
     Ok(access_token)
 }
