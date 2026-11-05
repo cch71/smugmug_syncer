@@ -1,6 +1,6 @@
 [package]
 name = "smugmug_syncer"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 authors = ["Craig Hamilton"]
 description = "Backs up a SmugMug account to a local folder and tags faces in it"
