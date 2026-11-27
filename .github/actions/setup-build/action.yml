@@ -8,6 +8,12 @@ inputs:
     description: Extra rustup components (comma separated)
     required: false
     default: ""
+  cache-packages:
+    description: >
+      Restore downloaded Homebrew bottles from the Actions cache (macOS), saving it on main.
+      Leave off for release builds, which start clean so a poisoned cache can't reach them.
+    required: false
+    default: "false"
 runs:
   using: composite
   steps:
@@ -21,6 +27,24 @@ runs:
           build-essential pkg-config cmake libssl-dev libblas-dev liblapack-dev \
           nlohmann-json3-dev libopencv-dev libdlib-dev
 
+    # Only the downloads are cached: they take about a minute, while unpacking them takes about
+    # two and can't be skipped.  On Linux, apt's downloads take only a few seconds, so there's
+    # nothing worth caching.  The key includes the runner image version, which fixes the
+    # formula versions since Homebrew doesn't auto-update here.
+    - name: Find the Homebrew download cache
+      id: brew-cache
+      if: runner.os == 'macOS' && inputs.cache-packages == 'true'
+      shell: bash
+      run: echo "path=$(brew --cache)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Homebrew downloads
+      id: brew-restore
+      if: runner.os == 'macOS' && inputs.cache-packages == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.brew-cache.outputs.path }}
+        key: brew-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ env.ImageVersion }}
+
     - name: Install macOS build dependencies
       if: runner.os == 'macOS'
       shell: bash
@@ -28,6 +52,15 @@ runs:
         HOMEBREW_NO_AUTO_UPDATE: "1"
         HOMEBREW_NO_INSTALL_CLEANUP: "1"
       run: brew install pkg-config dlib opencv nlohmann-json
+
+    - name: Save Homebrew downloads
+      if: >-
+        runner.os == 'macOS' && inputs.cache-packages == 'true' &&
+        github.ref == 'refs/heads/main' && steps.brew-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.brew-cache.outputs.path }}
+        key: ${{ steps.brew-restore.outputs.cache-primary-key }}
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable

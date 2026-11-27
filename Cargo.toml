@@ -41,14 +41,8 @@ cxx = "1"
 ciborium = { version = "0.2" }
 polars = { version = "0.55.2", features = [
     "parquet",
-    "json",
     "lazy",
     "serde",
-    "serde-lazy",
-    "temporal",
-    "streaming",
-    "performant",
-    "object",
     "is_in",
 ] }
 uuid = { version = "1", features = ["v4"] }
