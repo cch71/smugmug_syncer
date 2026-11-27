@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use polars::prelude::*;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,7 @@ impl LocalFolder {
         let mut smugmug_folder =
             if force_update_if_exists || !path_finder.does_album_and_node_data_file_exists()? {
                 log::debug!("downloading album and node data");
-                props.album_node_last_sync_ts = Some(Utc::now());
+                props.album_node_last_sync_ts = Some(Timestamp::now());
                 SmugMugFolder::populate_from_node(client.to_owned(), node).await?
             } else {
                 // Retrieve all from file cache
@@ -109,7 +109,7 @@ impl LocalFolder {
             && (force_update_if_exists || !smugmug_folder.are_images_populated())
         {
             log::debug!("downloading image data");
-            props.image_map_last_sync_ts = Some(Utc::now());
+            props.image_map_last_sync_ts = Some(Timestamp::now());
             smugmug_folder = smugmug_folder.populate_image_map(client.to_owned()).await?
         }
 
@@ -418,8 +418,8 @@ pub(crate) const DB_VERSION: &str = "1.0.0";
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 struct Props {
-    album_node_last_sync_ts: Option<DateTime<Utc>>,
-    image_map_last_sync_ts: Option<DateTime<Utc>>,
+    album_node_last_sync_ts: Option<Timestamp>,
+    image_map_last_sync_ts: Option<Timestamp>,
     /// Layout version of the `.smugmug_db` directory, see [`DB_VERSION`]
     db_version: Option<String>,
 
@@ -571,6 +571,19 @@ mod tests {
                 .stamp_db_version()
                 .is_err()
         );
+    }
+
+    // props.json written by chrono based versions loads, and is written back unchanged
+    #[test]
+    fn props_sync_timestamps_from_older_versions() {
+        let old = serde_json::json!({
+            "album_node_last_sync_ts": "2026-11-05T21:49:34.123456789Z",
+            "image_map_last_sync_ts": "2026-11-05T21:49:35Z",
+            "db_version": "1.0.0"
+        });
+        let props: Props = serde_json::from_value(old.clone()).unwrap();
+        assert!(props.album_node_last_sync_ts.is_some());
+        assert_eq!(serde_json::to_value(&props).unwrap(), old);
     }
 
     #[test]

@@ -11,6 +11,12 @@ database version in the entry.
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the unmaintained `chrono` crate with `jiff` (via `smugmug` 0.11). Dates in
+  `.smugmug_db` keep the same format, so the database version stays 1.0.0 and existing
+  archives load unchanged. `chrono` is still pulled in indirectly by `polars`.
+
 ## [1.0.2] - 2026-11-05
 
 ## [1.0.1] - 2026-11-05
