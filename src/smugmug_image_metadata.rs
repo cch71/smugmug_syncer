@@ -12,10 +12,17 @@
 use std::{collections::HashSet, path::Path};
 
 use anyhow::Result;
+use jiff::{Timestamp, tz::Offset};
 use polars::prelude::*;
 use smugmug::v2::{Image, ImageMetadata};
 
 use crate::parquet_store::{get_dataframe, has_parquet_files, save_dataframe};
+
+// Formats a timestamp as RFC 3339 in UTC with a `+00:00` offset, the form earlier versions
+// stored in the `date_time_original` column, so the column's values stay consistent
+fn to_rfc3339(ts: Timestamp) -> String {
+    ts.display_with_offset(Offset::UTC).to_string()
+}
 
 /// One artifact's metadata.  Commonly used fields get their own column and every field SmugMug
 /// returned is kept in `metadata_json`, which is empty when SmugMug had no metadata for it.
@@ -41,7 +48,7 @@ impl ImageMetadataRecord {
         let Some(metadata) = metadata else {
             return Ok(Self {
                 image_key: image.image_key.clone(),
-                date_time_original: image.date_time_original.map(|v| v.to_rfc3339()),
+                date_time_original: image.date_time_original.map(to_rfc3339),
                 serial: image.serial,
                 original_width: image.original_width,
                 original_height: image.original_height,
@@ -63,7 +70,7 @@ impl ImageMetadataRecord {
         };
         Ok(Self {
             image_key: image.image_key.clone(),
-            date_time_original: image.date_time_original.map(|v| v.to_rfc3339()),
+            date_time_original: image.date_time_original.map(to_rfc3339),
             serial: image.serial,
             original_width: image.original_width,
             original_height: image.original_height,

@@ -15,13 +15,13 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use chrono::Utc;
 use futures::{
     StreamExt,
     future::{TryJoinAll, try_join_all},
     pin_mut,
 };
 use image::ImageReader;
+use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
 use serde_json::json;
 use smugmug::v2::{
@@ -758,10 +758,9 @@ impl SmugMugFolder {
         days_since_created: u16,
         days_since_last_updated: u16,
     ) -> Result<usize> {
-        let cutoff_from_date_created_dt =
-            Utc::now() - chrono::Duration::days(days_since_created as i64);
-        let last_updated_cutoff_dt =
-            Utc::now() - chrono::Duration::days(days_since_last_updated as i64);
+        let now = Timestamp::now();
+        let cutoff_from_date_created_dt = days_before(now, days_since_created)?;
+        let last_updated_cutoff_dt = days_before(now, days_since_last_updated)?;
 
         let albums_with_upload_keys: Vec<Arc<Album>> = self
             .tree
@@ -770,7 +769,7 @@ impl SmugMugFolder {
             .filter_map(|ds_node| ds_node.get_value().ok().flatten())
             .filter(|album| {
                 album.upload_key.is_some()
-                    && (cutoff_from_date_created_dt > album.date_created.unwrap_or(Utc::now())
+                    && (cutoff_from_date_created_dt > album.date_created.unwrap_or(now)
                         || last_updated_cutoff_dt > album.last_updated)
             })
             .collect();
@@ -915,4 +914,9 @@ impl SmugMugFolderStats {
             ..Default::default()
         }
     }
+}
+
+// Returns the time the given number of whole (24 hour) days before `ts`
+fn days_before(ts: Timestamp, days: u16) -> Result<Timestamp> {
+    Ok(ts.checked_sub(SignedDuration::from_hours(i64::from(days) * 24))?)
 }
