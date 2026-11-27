@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Daily, so main always has a build cache: pull requests can only restore caches saved on
+    # main, and GitHub deletes caches that go unused for 7 days
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -15,6 +19,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Backtraces keep file and line numbers, without the full debug info that bloats the cache
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   lint:
@@ -28,6 +34,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Only main saves, so pull requests don't fill the 10 GB cache with copies other
+          # pull requests can't read
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --release --all-targets -- -D warnings
 
@@ -44,5 +54,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-build
+        with:
+          cache-packages: true
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo test --release
+        with:
+          # Only main saves, so pull requests don't fill the 10 GB cache with copies other
+          # pull requests can't read
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Debug build: the tests run in well under a second either way, and skipping optimization
+      # makes a cold build much faster.  release.yml still builds and smoke tests the release
+      # binary.
+      - run: cargo test

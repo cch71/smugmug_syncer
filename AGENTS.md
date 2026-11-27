@@ -80,12 +80,16 @@ Note the new database version in `CHANGELOG.md`.
   permissive or file-level copyleft.
 - Put setup that several workflows need in `.github/actions/setup-build` rather than
   copying steps between them. Keep its Linux packages in sync with the `Dockerfile`.
+- Caches (Rust builds, Homebrew downloads) are saved only on `main`, which CI also runs on daily
+  so they don't expire. Pull requests restore them. Release builds don't use any cache, so a
+  poisoned cache can't reach a published binary: leave `cache-packages` off in `release.yml`.
 
 ## Checks before finishing
 
 - `cargo build --release` and `cargo clippy --release --all-targets -- -D warnings` add no
   new errors or warnings, and `cargo fmt --all --check` passes.
-- `cargo test --release` and `cargo deny check` pass.
+- `cargo test` and `cargo deny check` pass. CI runs the tests in the debug build, since
+  optimizing doesn't make them faster but makes a cold build much slower.
 - Changes to reading or writing metadata still load an existing `.smugmug_db` written by the
   previous version.
 - After editing workflows: `actionlint` and `zizmor --offline .github` report no new
